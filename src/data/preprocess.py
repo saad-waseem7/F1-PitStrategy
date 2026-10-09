@@ -125,21 +125,29 @@ def add_base_columns(raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _is_true(series: pd.Series) -> pd.Series:
+    """True only where the value is exactly True; NaN/None count as False.
+
+    Avoids the deprecated object-dtype ``fillna(False)`` downcast.
+    """
+    return series.eq(True)
+
+
 def clean_mask(df: pd.DataFrame, drop_rain: bool = True) -> pd.Series:
     """Boolean mask of laps usable for tyre-degradation modelling."""
     mask = df["LapTime"].notna()
-    mask &= ~df["IsInLap"].fillna(False).astype(bool)
-    mask &= ~df["IsOutLap"].fillna(False).astype(bool)
+    mask &= ~_is_true(df["IsInLap"])
+    mask &= ~_is_true(df["IsOutLap"])
     mask &= df["tire_compound"].isin(DRY_COMPOUNDS).fillna(False)
     mask &= is_clean_track_status(df["TrackStatus"])
     mask &= df["race_lap"] > 1  # standing start distorts lap 1
     mask &= df[["track_temp", "air_temp"]].notna().all(axis=1)
     if "Deleted" in df.columns:
-        mask &= ~df["Deleted"].fillna(False).astype(bool)
+        mask &= ~_is_true(df["Deleted"])
     if "IsAccurate" in df.columns:
-        mask &= df["IsAccurate"].fillna(False).astype(bool)
+        mask &= _is_true(df["IsAccurate"])
     if drop_rain:
-        mask &= ~df["Rainfall"].fillna(False).astype(bool)
+        mask &= ~_is_true(df["Rainfall"])
     return mask
 
 
