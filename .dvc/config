@@ -1,4 +1,4 @@
 [core]
     remote = localstore
 ['remote "localstore"']
-    url = /home/saad/dvc-storage/f1-pit-strategy
+    url = /home/saad/Documents/dvc-storage/f1-pit-strategy
