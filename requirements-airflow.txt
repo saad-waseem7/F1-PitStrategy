@@ -1,0 +1,4 @@
+# Install ONLY inside the Airflow image/venv, with the official constraints file:
+#   pip install -r requirements-airflow.txt \
+#     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-<AIRFLOW_VERSION>/constraints-<PYTHON_VERSION>.txt"
+apache-airflow>=2.9

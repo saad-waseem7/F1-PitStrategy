@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Data is versioned by DVC, never by Git (the .dvc pointer files ARE committed)
+/data/raw/*
+/data/processed/*
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+
+# FastF1 cache (can reach GBs)
+/cache/
+.fastf1-cache/
+
+# MLflow local artifacts
+mlruns/
+mlartifacts/
+mlflow.db
+
+# Model binaries served locally
+/models_local/
+
+# Airflow
+airflow.db
+airflow-webserver.pid
+/logs/
+
+# Env and IDE
+.env
+.idea/
+.vscode/
+.DS_Store

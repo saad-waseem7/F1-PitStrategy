@@ -1,0 +1,4 @@
+[core]
+    remote = localstore
+['remote "localstore"']
+    url = /home/saad/dvc-storage/f1-pit-strategy
