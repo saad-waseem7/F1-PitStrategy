@@ -1,8 +1,0 @@
-# Paths DVC should skip when scanning the workspace
-__pycache__/
-.venv/
-venv/
-cache/
-mlruns/
-.pytest_cache/
-.ruff_cache/
