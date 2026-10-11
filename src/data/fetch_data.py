@@ -1,29 +1,42 @@
-"""Download raw F1 lap and weather data via FastF1 and store it as Parquet.
+"""Download raw F1 race data from the OpenF1 API and store it as Parquet.
 
-One Parquet file is written per session (``{year}_{round:02d}_{session}.parquet``)
-so new races can be added incrementally and tracked by DVC.
+OpenF1 (openf1.org) is free, needs no key, and serves plain JSON over HTTPS.
+Historical data starts in 2023. One Parquet file is written per race
+(``{year}_{round:02d}_R.parquet``), so new races can be added incrementally and
+tracked with DVC.
 
-Reliability features, because a half-downloaded dataset silently biases a model:
+Per race it calls five endpoints: ``laps``, ``stints``, ``drivers``, ``weather``
+and ``race_control`` (plus ``sessions`` once per season).
 
-* **Atomic writes.** Each file is written to a temporary name and renamed, so a
+Reliability, because a half-downloaded dataset silently biases a model:
+
+* **Atomic writes.** A file is written under a temporary name and renamed, so a
   crash never leaves a truncated file that later runs would skip as "done".
 * **Corrupt-file recovery.** Existing files are checked and re-downloaded if
   unreadable or empty.
-* **Retries.** Transient network errors are retried with a growing delay.
-* **Rate limit.** FastF1 allows about 500 API calls per hour, and each race costs
-  several, so a full download takes a few hours. When the limit is hit the run
-  stops at once (retrying only burns calls), keeps everything already saved and
-  exits with code 2. Re-run the same command an hour later; finished races are
-  skipped, so it resumes where it stopped.
-* **Validation.** A session with too few timed laps is rejected, not saved.
-* **Completeness report.** After every run the missing sessions are listed and
-  the exit code is non-zero when too many failed. A few failures are normal
-  (cancelled races, such as Emilia-Romagna 2023, have no data).
+* **Retries.** Connection errors, HTTP 429 and 5xx are retried with exponential
+  backoff, honouring ``Retry-After``.
+* **Validation.** A race with fewer than 50 timed laps is rejected, not saved.
+* **Completeness report.** Missing races are listed after every run, and the exit
+  code is non-zero when more than 15 percent failed.
+
+Raw schema written (one row per driver lap):
+
+* ``TyreLife``    = ``tyre_age_at_start + (lap - stint lap_start) + 1``. A new set
+  has age 0 at the start, and the first lap on it counts as 1.
+* ``IsOutLap``    = OpenF1's pit-out flag, or the first lap of any later stint.
+* ``IsInLap``     = last lap of every stint except the driver's final one.
+* ``Weather``     = the reading at or just before each lap's start time.
+* ``TrackStatus`` = codes built from race-control messages: ``2`` yellow,
+  ``4`` safety car, ``5`` red flag, ``6`` VSC, ``7`` VSC ending, ``1`` otherwise.
+  The lap after a safety car or VSC period is also flagged because it is a
+  restart lap. This is a reconstruction from text messages.
+* ``RoundNumber`` is the order of the season's non-cancelled race sessions, which
+  can differ from the official round number after a cancellation.
 
 Usage:
-    python -m src.data.fetch_data --since 2018            # everything available
-    python -m src.data.fetch_data --years 2023 2024 --session R
-    python -m src.data.fetch_data --years 2024 --rounds 5 6 --force
+    python -m src.data.fetch_data --years 2023 2024 2025 2026
+    python -m src.data.fetch_data --years 2025 --rounds 5 6 --force
 """
 
 from __future__ import annotations
@@ -34,50 +47,32 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
-import fastf1
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import requests
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR = Path("cache")
+BASE_URL = "https://api.openf1.org/v1"
+FIRST_SEASON = 2023
 DEFAULT_OUT_DIR = Path("data/raw")
-FIRST_RELIABLE_SEASON = 2018  # FastF1 lap and tyre data is dependable from here
+REQUEST_TIMEOUT_S = 60
+MAX_ATTEMPTS = 5
+MIN_INTERVAL_S = 0.4  # politeness delay between calls
+WEATHER_TOLERANCE = timedelta(minutes=15)
+SESSION_CODE = "R"
 MIN_TIMED_LAPS = 50  # a real race has hundreds; fewer means a broken download
-DEFAULT_RETRIES = 2
-RETRY_DELAY_S = 5.0
 DEFAULT_MAX_FAILURE_RATE = 0.15
 
-REQUIRED_LAP_COLUMNS: tuple[str, ...] = (
-    "Driver",
-    "LapNumber",
-    "LapTime",
-    "Stint",
-    "Compound",
-    "TyreLife",
-    "TrackStatus",
-)
-OPTIONAL_LAP_COLUMNS: tuple[str, ...] = (
-    "DriverNumber",
-    "Team",
-    "FreshTyre",
-    "IsAccurate",
-    "Deleted",
-    "PitInTime",
-    "PitOutTime",
-)
-WEATHER_COLUMNS: tuple[str, ...] = (
-    "AirTemp",
-    "TrackTemp",
-    "Humidity",
-    "Pressure",
-    "Rainfall",
-    "WindSpeed",
-    "WindDirection",
-)
+_last_call = 0.0
+
+
+# ------------------------------------------------------------ files and reporting
 
 
 @dataclass
@@ -87,11 +82,6 @@ class FetchReport:
     written: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)  # file name -> reason
-    rate_limited: bool = False  # FastF1 refused further calls; run was cut short
-
-    @property
-    def attempted(self) -> int:
-        return len(self.written) + len(self.failed)
 
     @property
     def total(self) -> int:
@@ -102,37 +92,11 @@ class FetchReport:
         return len(self.failed) / self.total if self.total else 0.0
 
 
-def enable_cache(cache_dir: Path) -> None:
-    """Enable the FastF1 on-disk cache. The directory must exist first."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    fastf1.Cache.enable_cache(str(cache_dir))
-
-
-def output_path(out_dir: Path, year: int, rnd: int, session: str) -> Path:
-    """Return the deterministic Parquet path for one session."""
+def output_path(
+    out_dir: Path, year: int, rnd: int, session: str = SESSION_CODE
+) -> Path:
+    """Return the deterministic Parquet path for one race."""
     return out_dir / f"{year}_{rnd:02d}_{session}.parquet"
-
-
-def resolve_years(
-    years: list[int] | None, since: int | None, today: date | None = None
-) -> list[int]:
-    """Turn ``--years`` / ``--since`` into a sorted list of seasons.
-
-    Raises:
-        ValueError: if neither is given, or a year is before the first reliable
-            season or in the future.
-    """
-    current = (today or datetime.now(tz=UTC).date()).year
-    if since is not None:
-        years = list(range(since, current + 1))
-    if not years:
-        raise ValueError("Give --years or --since")
-    bad = [y for y in years if y < FIRST_RELIABLE_SEASON or y > current]
-    if bad:
-        raise ValueError(
-            f"Seasons {bad} are outside {FIRST_RELIABLE_SEASON}..{current}"
-        )
-    return sorted(set(years))
 
 
 def is_valid_parquet(path: Path) -> bool:
@@ -153,59 +117,6 @@ def write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def list_completed_rounds(year: int, session_code: str = "R") -> pd.DataFrame:
-    """Return the completed, non-testing events of a season.
-
-    For sprint sessions (``S``) only weekends that actually hold a sprint are
-    returned, so ordinary weekends are not counted as failures.
-    """
-    schedule = fastf1.get_event_schedule(year, include_testing=False)
-    done = schedule[schedule["EventDate"] < pd.Timestamp.now()]
-    if session_code.upper() == "S" and "EventFormat" in done.columns:
-        done = done[done["EventFormat"].astype(str).str.contains("sprint", case=False)]
-    return done[["RoundNumber", "EventName"]].reset_index(drop=True)
-
-
-def build_session_frame(session: fastf1.core.Session, year: int) -> pd.DataFrame:
-    """Flatten a loaded session into a lap-level frame with weather attached.
-
-    Raises:
-        ValueError: if the session lacks columns the pipeline depends on.
-    """
-    laps = session.laps
-    missing = [c for c in REQUIRED_LAP_COLUMNS if c not in laps.columns]
-    if missing:
-        raise ValueError(f"Session is missing required lap columns: {missing}")
-
-    keep = list(REQUIRED_LAP_COLUMNS) + [
-        c for c in OPTIONAL_LAP_COLUMNS if c in laps.columns
-    ]
-    frame = pd.DataFrame(laps[keep]).reset_index(drop=True)
-
-    # Weather aligned to each lap by timestamp (FastF1 handles the join).
-    weather = laps.get_weather_data().reset_index(drop=True)
-    for col in WEATHER_COLUMNS:
-        frame[col] = weather[col] if col in weather.columns else pd.NA
-
-    # Timedelta -> float seconds / booleans so Parquet and pandas stay simple.
-    frame["LapTime"] = frame["LapTime"].dt.total_seconds()
-    frame["IsInLap"] = frame["PitInTime"].notna() if "PitInTime" in frame else False
-    frame["IsOutLap"] = frame["PitOutTime"].notna() if "PitOutTime" in frame else False
-    frame = frame.drop(columns=["PitInTime", "PitOutTime"], errors="ignore")
-
-    # Total laps drives the fuel-load estimate downstream.
-    total_laps = getattr(session, "total_laps", None)
-    if not total_laps:
-        total_laps = int(frame["LapNumber"].max())
-
-    frame["Year"] = year
-    frame["RoundNumber"] = int(session.event["RoundNumber"])
-    frame["EventName"] = str(session.event["EventName"])
-    frame["SessionName"] = str(session.name)
-    frame["TotalLaps"] = int(total_laps)
-    return frame
-
-
 def validate_session_frame(frame: pd.DataFrame) -> None:
     """Reject a download that is too thin to be a real race.
 
@@ -217,88 +128,348 @@ def validate_session_frame(frame: pd.DataFrame) -> None:
         raise ValueError(f"Only {timed} timed laps (need {MIN_TIMED_LAPS})")
 
 
-def fetch_session(year: int, rnd: int, session_code: str) -> pd.DataFrame:
-    """Load one session from FastF1 (laps + weather only, no telemetry)."""
-    session = fastf1.get_session(year, rnd, session_code)
-    session.load(laps=True, telemetry=False, weather=True, messages=False)
-    # FastF1 logs network failures instead of raising, then fails on first
-    # access. Surface that as one clear error.
-    try:
-        _ = session.laps
-    except fastf1.exceptions.DataNotLoadedError as exc:
-        raise RuntimeError(
-            f"FastF1 returned no lap data for {year} round {rnd}. "
-            "Check network access to livetiming.formula1.com."
-        ) from exc
-    frame = build_session_frame(session, year)
+# ------------------------------------------------------------ HTTP
+
+
+def get_json(endpoint: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """GET ``{BASE_URL}/{endpoint}`` and return the rows as a list of dicts.
+
+    Retries connection errors, HTTP 429 and 5xx with exponential backoff
+    (honouring ``Retry-After``). OpenF1 answers an empty result with HTTP 404 or
+    a ``{"detail": ...}`` object; both become an empty list.
+
+    Raises:
+        RuntimeError: after ``MAX_ATTEMPTS`` failed attempts or on another
+            HTTP error.
+    """
+    global _last_call
+    url = f"{BASE_URL}/{endpoint}"
+    last_error = "unknown error"
+    for attempt in range(MAX_ATTEMPTS):
+        wait = MIN_INTERVAL_S - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
+        try:
+            response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_S)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.status_code == 404:
+                return []
+            if response.status_code == 429 or response.status_code >= 500:
+                last_error = f"HTTP {response.status_code}"
+                retry_after = response.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    time.sleep(min(int(retry_after), 120))
+            elif response.ok:
+                data = response.json()
+                return data if isinstance(data, list) else []
+            else:
+                raise RuntimeError(f"{url} returned HTTP {response.status_code}")
+        if attempt < MAX_ATTEMPTS - 1:
+            delay = 2.0 * 2**attempt
+            logger.warning(
+                "%s failed (%s); retrying in %.0fs", endpoint, last_error, delay
+            )
+            time.sleep(delay)
+    raise RuntimeError(f"{url} failed after {MAX_ATTEMPTS} attempts: {last_error}")
+
+
+def fetch_table(endpoint: str, params: dict[str, Any]) -> pd.DataFrame:
+    """``get_json`` as a DataFrame (empty if there are no rows)."""
+    return pd.DataFrame(get_json(endpoint, params))
+
+
+# ------------------------------------------------------------ schedule
+
+
+def list_race_sessions(year: int) -> pd.DataFrame:
+    """Completed, non-cancelled race sessions of a season with their round number.
+
+    Returns columns ``session_key, RoundNumber, EventName, date_start``.
+    """
+    sessions = fetch_table("sessions", {"year": year, "session_name": "Race"})
+    if sessions.empty:
+        return pd.DataFrame(
+            columns=["session_key", "RoundNumber", "EventName", "date_start"]
+        )
+    if "is_cancelled" in sessions.columns:
+        sessions = sessions[~sessions["is_cancelled"].fillna(False).astype(bool)]
+    sessions = sessions.assign(
+        date_start=pd.to_datetime(sessions["date_start"], utc=True, format="ISO8601")
+    )
+    sessions = sessions[sessions["date_start"] < pd.Timestamp.now(tz="UTC")]
+    sessions = sessions.sort_values("date_start").reset_index(drop=True)
+    sessions["RoundNumber"] = np.arange(1, len(sessions) + 1)
+    name = (
+        sessions["location"]
+        if "location" in sessions.columns
+        else sessions["country_name"]
+    )
+    sessions["EventName"] = name.astype(str)
+    return sessions[["session_key", "RoundNumber", "EventName", "date_start"]]
+
+
+# ------------------------------------------------------------ building blocks
+
+
+def stint_laps(stints: pd.DataFrame, last_lap: pd.Series) -> pd.DataFrame:
+    """Expand stint rows into one row per (driver, lap).
+
+    Args:
+        stints: OpenF1 stints (``lap_start``, ``lap_end``, ``compound``, ...).
+        last_lap: each driver's final lap number, used when ``lap_end`` is null.
+
+    Returns columns ``driver_number, lap_number, Stint, Compound, TyreLife,
+    IsInLap, IsOutLapStint``. Stints without a start lap are dropped. If stints
+    overlap on a lap, the later stint wins.
+    """
+    rows: list[pd.DataFrame] = []
+    s = stints.dropna(subset=["lap_start", "driver_number"]).copy()
+    s["lap_end"] = s["lap_end"].fillna(s["driver_number"].map(last_lap))
+    s = s.dropna(subset=["lap_end"]).sort_values(["driver_number", "stint_number"])
+    final_stint = s.groupby("driver_number")["stint_number"].transform("max")
+    for row, is_final in zip(
+        s.itertuples(index=False), s["stint_number"] == final_stint, strict=True
+    ):
+        laps = np.arange(int(row.lap_start), int(row.lap_end) + 1)
+        age0 = 0 if pd.isna(row.tyre_age_at_start) else int(row.tyre_age_at_start)
+        rows.append(
+            pd.DataFrame(
+                {
+                    "driver_number": int(row.driver_number),
+                    "lap_number": laps,
+                    "Stint": float(row.stint_number),
+                    "Compound": str(row.compound).upper()
+                    if pd.notna(row.compound)
+                    else None,
+                    "TyreLife": float(age0) + (laps - int(row.lap_start)) + 1.0,
+                    "IsInLap": (laps == int(row.lap_end)) & (not is_final),
+                    "IsOutLapStint": (laps == int(row.lap_start))
+                    & (row.stint_number > 1),
+                }
+            )
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "driver_number", "lap_number", "Stint", "Compound",
+                "TyreLife", "IsInLap", "IsOutLapStint",
+            ]
+        )  # fmt: skip
+    out = pd.concat(rows, ignore_index=True)
+    return out.drop_duplicates(["driver_number", "lap_number"], keep="last")
+
+
+def build_track_status(race_control: pd.DataFrame, total_laps: int) -> pd.Series:
+    """Track status string for every lap 1..``total_laps``.
+
+    Laps are labelled from race-control messages. Safety-car and VSC periods run
+    from their ``DEPLOYED`` message to their end message, plus one restart lap.
+    """
+    codes: dict[int, set[str]] = {lap: set() for lap in range(1, total_laps + 1)}
+
+    def mark(first: int, last: int, code: str) -> None:
+        for lap in range(max(first, 1), min(last, total_laps) + 1):
+            codes[lap].add(code)
+
+    if not race_control.empty and "lap_number" in race_control.columns:
+        rc = race_control.dropna(subset=["lap_number"]).sort_values("date")
+        sc_start: int | None = None
+        vsc_start: int | None = None
+        for row in rc.itertuples(index=False):
+            lap = int(row.lap_number)
+            message = str(getattr(row, "message", "") or "").upper()
+            flag = str(getattr(row, "flag", "") or "").upper()
+            category = str(getattr(row, "category", "") or "")
+            if flag in {"YELLOW", "DOUBLE YELLOW"}:
+                mark(lap, lap, "2")
+            elif flag == "RED":
+                mark(lap, lap + 1, "5")
+            if category != "SafetyCar":
+                continue
+            if "VIRTUAL SAFETY CAR" in message or message.startswith("VSC"):
+                if "DEPLOYED" in message:
+                    vsc_start = lap
+                elif "ENDING" in message:
+                    mark(vsc_start if vsc_start is not None else lap, lap, "6")
+                    mark(lap, lap + 1, "7")
+                    vsc_start = None
+            elif "SAFETY CAR" in message:
+                if "DEPLOYED" in message:
+                    sc_start = lap
+                elif "IN THIS LAP" in message:
+                    mark(sc_start if sc_start is not None else lap, lap + 1, "4")
+                    sc_start = None
+        if sc_start is not None:
+            mark(sc_start, total_laps, "4")
+        if vsc_start is not None:
+            mark(vsc_start, total_laps, "6")
+
+    return pd.Series(
+        {lap: "".join(sorted(c)) if c else "1" for lap, c in codes.items()},
+        name="TrackStatus",
+    )
+
+
+def attach_weather(laps: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
+    """Add AirTemp, TrackTemp and Rainfall from the reading at or before each lap.
+
+    Laps without a start time get the nearest known time of the same driver.
+    Laps with no reading within ``WEATHER_TOLERANCE`` keep missing weather and
+    are removed later by preprocessing.
+    """
+    out = laps.copy()
+    air = np.full(len(out), np.nan)
+    track = np.full(len(out), np.nan)
+    rain = np.full(len(out), np.nan)
+    if not weather.empty and "date" in weather.columns:
+        w = weather.assign(
+            date=pd.to_datetime(weather["date"], utc=True, format="ISO8601")
+        ).sort_values("date")
+        readings = pd.DataFrame(
+            {
+                "date": w["date"],
+                "air": pd.to_numeric(w["air_temperature"], errors="coerce"),
+                "track": pd.to_numeric(w["track_temperature"], errors="coerce"),
+                "rain": (
+                    pd.to_numeric(w.get("rainfall"), errors="coerce").fillna(0) > 0
+                ).astype(float),
+            }
+        )
+        times = pd.to_datetime(out["date_start"], utc=True, format="ISO8601")
+        times = times.groupby(out["driver_number"]).transform(
+            lambda s: s.ffill().bfill()
+        )
+        left = pd.DataFrame({"pos": np.arange(len(out)), "t": times.to_numpy()})
+        left = left.dropna(subset=["t"]).sort_values("t")
+        merged = pd.merge_asof(
+            left,
+            readings,
+            left_on="t",
+            right_on="date",
+            direction="backward",
+            tolerance=WEATHER_TOLERANCE,
+        )
+        pos = merged["pos"].to_numpy()
+        air[pos] = merged["air"].to_numpy()
+        track[pos] = merged["track"].to_numpy()
+        rain[pos] = merged["rain"].to_numpy()
+    out["AirTemp"] = air
+    out["TrackTemp"] = track
+    out["Rainfall"] = pd.Series(rain, index=out.index).map(
+        lambda v: None if pd.isna(v) else bool(v)
+    )
+    return out
+
+
+def build_session_frame(
+    laps: pd.DataFrame,
+    stints: pd.DataFrame,
+    drivers: pd.DataFrame,
+    weather: pd.DataFrame,
+    race_control: pd.DataFrame,
+    year: int,
+    round_number: int,
+    event_name: str,
+) -> pd.DataFrame:
+    """Join the five OpenF1 tables into the raw schema ``preprocess`` expects.
+
+    Raises:
+        ValueError: if laps or stints are empty.
+    """
+    if laps.empty or stints.empty:
+        raise ValueError("OpenF1 returned no laps or no stints for this session")
+    laps = laps.dropna(subset=["driver_number", "lap_number"]).copy()
+    laps["driver_number"] = laps["driver_number"].astype(int)
+    laps["lap_number"] = laps["lap_number"].astype(int)
+    laps = laps.drop_duplicates(["driver_number", "lap_number"], keep="last")
+    total_laps = int(laps["lap_number"].max())
+
+    last_lap = laps.groupby("driver_number")["lap_number"].max()
+    tyres = stint_laps(stints, last_lap)
+    frame = laps.merge(tyres, on=["driver_number", "lap_number"], how="left")
+    frame = attach_weather(frame, weather)
+
+    acronyms = (
+        drivers.drop_duplicates("driver_number").set_index("driver_number")[
+            "name_acronym"
+        ]
+        if not drivers.empty
+        else pd.Series(dtype=str)
+    )
+    frame["Driver"] = (
+        frame["driver_number"].map(acronyms).fillna(frame["driver_number"].astype(str))
+    )
+    status = build_track_status(race_control, total_laps)
+    pit_out = frame.get("is_pit_out_lap", pd.Series(False, index=frame.index))
+    pit_out = pit_out.eq(True)
+
+    result = pd.DataFrame(
+        {
+            "Year": year,
+            "RoundNumber": round_number,
+            "EventName": event_name,
+            "SessionName": "Race",
+            "TotalLaps": total_laps,
+            "Driver": frame["Driver"],
+            "LapNumber": frame["lap_number"].astype(float),
+            "LapTime": pd.to_numeric(frame["lap_duration"], errors="coerce"),
+            "Stint": frame["Stint"],
+            "Compound": frame["Compound"],
+            "TyreLife": frame["TyreLife"],
+            "TrackStatus": frame["lap_number"].map(status).fillna("1"),
+            "IsInLap": frame["IsInLap"].eq(True),
+            "IsOutLap": pit_out | frame["IsOutLapStint"].eq(True),
+            "AirTemp": frame["AirTemp"],
+            "TrackTemp": frame["TrackTemp"],
+            "Rainfall": frame["Rainfall"],
+        }
+    )
+    return result.reset_index(drop=True)
+
+
+# ------------------------------------------------------------ fetching
+
+
+def fetch_session(
+    session_key: int, year: int, round_number: int, event_name: str
+) -> pd.DataFrame:
+    """Download and assemble one race. Raises on missing or thin data."""
+    key = {"session_key": session_key}
+    frame = build_session_frame(
+        fetch_table("laps", key),
+        fetch_table("stints", key),
+        fetch_table("drivers", key),
+        fetch_table("weather", key),
+        fetch_table("race_control", key),
+        year,
+        round_number,
+        event_name,
+    )
     validate_session_frame(frame)
     return frame
 
 
-def fetch_with_retry(
-    year: int,
-    rnd: int,
-    session_code: str,
-    retries: int = DEFAULT_RETRIES,
-    delay_s: float = RETRY_DELAY_S,
-) -> pd.DataFrame:
-    """``fetch_session`` with ``retries`` extra attempts and a growing delay.
-
-    The last exception is re-raised. A cancelled race fails every attempt, which
-    only costs a few seconds.
-    """
-    for attempt in range(retries + 1):
-        try:
-            return fetch_session(year, rnd, session_code)
-        except fastf1.exceptions.RateLimitExceededError:
-            raise  # retrying cannot help and only spends more calls
-        except Exception as exc:
-            if attempt == retries:
-                raise
-            wait = delay_s * (attempt + 1)
-            logger.warning(
-                "%s round %s attempt %d failed (%s); retrying in %.0fs",
-                year,
-                rnd,
-                attempt + 1,
-                exc,
-                wait,
-            )
-            time.sleep(wait)
-    raise AssertionError("unreachable")  # pragma: no cover
-
-
 def fetch_all(
-    years: list[int],
-    session_code: str,
-    rounds: list[int] | None,
-    out_dir: Path,
-    force: bool,
-    retries: int = DEFAULT_RETRIES,
-    delay_s: float = RETRY_DELAY_S,
+    years: list[int], rounds: list[int] | None, out_dir: Path, force: bool
 ) -> FetchReport:
-    """Fetch every requested session and return a ``FetchReport``.
-
-    A bad session is logged and recorded, never fatal; the caller decides if
-    the overall failure rate is acceptable (see ``main``).
-    """
+    """Fetch every requested race and return a ``FetchReport`` (never raises per race)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     report = FetchReport()
     for year in years:
         try:
-            events = list_completed_rounds(year, session_code)
-        except fastf1.exceptions.RateLimitExceededError as exc:
-            report.failed[f"{year}_schedule"] = str(exc)
-            report.rate_limited = True
-            return report
-        except Exception as exc:  # network/schedule failure: skip the season
-            logger.exception("Could not load schedule for %s", year)
+            races = list_race_sessions(year)
+        except Exception as exc:  # noqa: BLE001  a failed season must not stop the rest
+            logger.error("Could not load schedule for %s: %s", year, exc)
             report.failed[f"{year}_schedule"] = str(exc)
             continue
-        for rnd in events["RoundNumber"].astype(int):
+        for race in races.itertuples(index=False):
+            rnd = int(race.RoundNumber)
             if rounds and rnd not in rounds:
                 continue
-            path = output_path(out_dir, year, rnd, session_code)
+            path = output_path(out_dir, year, rnd, SESSION_CODE)
             if path.exists() and not force:
                 if is_valid_parquet(path):
                     logger.info("Skip existing %s", path.name)
@@ -306,14 +477,12 @@ def fetch_all(
                     continue
                 logger.warning("Corrupt or empty %s; downloading again", path.name)
             try:
-                frame = fetch_with_retry(year, rnd, session_code, retries, delay_s)
+                frame = fetch_session(
+                    int(race.session_key), year, rnd, str(race.EventName)
+                )
                 write_parquet_atomic(frame, path)
                 logger.info("Wrote %s (%d laps)", path.name, len(frame))
                 report.written.append(path.name)
-            except fastf1.exceptions.RateLimitExceededError as exc:
-                report.failed[path.name] = str(exc)
-                report.rate_limited = True
-                return report
             except Exception as exc:  # noqa: BLE001  record and continue
                 logger.error("Failed %s round %s: %s", year, rnd, exc)
                 report.failed[path.name] = str(exc)
@@ -322,29 +491,17 @@ def fetch_all(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--years", type=int, nargs="+", default=None)
-    parser.add_argument(
-        "--since",
-        type=int,
-        default=None,
-        help=f"First season; fetches every season up to the current one "
-        f"(earliest {FIRST_RELIABLE_SEASON})",
-    )
+    parser.add_argument("--years", type=int, nargs="+", required=True)
     parser.add_argument("--rounds", type=int, nargs="*", default=None)
-    parser.add_argument("--session", default="R", help="R=race, S=sprint")
-    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--force", action="store_true", help="Re-download files")
-    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument(
-        "--max-failure-rate",
-        type=float,
-        default=DEFAULT_MAX_FAILURE_RATE,
-        help="Exit non-zero if more than this share of sessions failed",
+        "--max-failure-rate", type=float, default=DEFAULT_MAX_FAILURE_RATE
     )
     args = parser.parse_args(argv)
-    if (args.years is None) == (args.since is None):
-        parser.error("give exactly one of --years or --since")
+    early = [y for y in args.years if y < FIRST_SEASON]
+    if early:
+        parser.error(f"historical data starts in {FIRST_SEASON}; got {early}")
     return args
 
 
@@ -353,32 +510,18 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     args = parse_args(argv)
-    years = resolve_years(args.years, args.since)
-    enable_cache(args.cache_dir)
-    report = fetch_all(
-        years, args.session, args.rounds, args.out_dir, args.force, args.retries
-    )
+    report = fetch_all(sorted(set(args.years)), args.rounds, args.out_dir, args.force)
     logger.info(
         "Done: %d written, %d already present, %d failed",
-        len(report.written),
-        len(report.skipped),
-        len(report.failed),
-    )
+        len(report.written), len(report.skipped), len(report.failed),
+    )  # fmt: skip
     for name, reason in sorted(report.failed.items()):
         logger.warning("MISSING %s: %s", name, reason)
-    if report.rate_limited:
-        logger.error(
-            "FastF1 rate limit (about 500 calls/hour) reached after %d new races. "
-            "Progress is saved; re-run the same command in about an hour.",
-            len(report.written),
-        )
-        return 2
     if report.failure_rate > args.max_failure_rate:
         logger.error(
             "Failure rate %.0f%% exceeds %.0f%%; the dataset is incomplete",
-            100 * report.failure_rate,
-            100 * args.max_failure_rate,
-        )
+            100 * report.failure_rate, 100 * args.max_failure_rate,
+        )  # fmt: skip
         return 1
     return 0
 

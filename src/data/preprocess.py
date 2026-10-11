@@ -1,4 +1,4 @@
-"""Clean raw FastF1 laps and build the model feature matrix.
+"""Clean raw lap data and build the model feature matrix.
 
 Target (``lap_time_loss``, seconds): fuel-corrected lap time minus the
 fuel-corrected baseline pace of the same driver stint, where the baseline is the
@@ -164,7 +164,7 @@ def drop_pace_outliers(clean: pd.DataFrame) -> pd.DataFrame:
 
 def add_target(clean: pd.DataFrame) -> pd.DataFrame:
     """Compute ``lap_time_loss`` against each stint's early-lap baseline."""
-    ordered = clean.sort_values(STINT_KEYS + ["lap_number"]).copy()
+    ordered = clean.sort_values([*STINT_KEYS, "lap_number"]).copy()
     ordered["_rank"] = ordered.groupby(STINT_KEYS).cumcount()
     baseline = (
         ordered[ordered["_rank"] < BASELINE_LAPS]

@@ -57,7 +57,7 @@ def test_output_schema_and_nonempty() -> None:
     out = pp.build_dataset(make_raw())
     assert list(out.columns) == pp.OUTPUT_COLUMNS
     assert len(out) > 0
-    assert out[pp.MODEL_FEATURES + [pp.TARGET]].notna().all().all()
+    assert out[[*pp.MODEL_FEATURES, pp.TARGET]].notna().all().all()
 
 
 def test_target_recovers_known_degradation() -> None:

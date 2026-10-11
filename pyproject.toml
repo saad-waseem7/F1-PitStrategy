@@ -1,0 +1,10 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF", "DTZ", "BLE"]
+ignore = ["E501"]  # the formatter wraps code; long strings and comments are allowed
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -15,10 +15,6 @@ htmlcov/
 !/data/raw/.gitkeep
 !/data/processed/.gitkeep
 
-# FastF1 cache (can reach GBs)
-/cache/
-.fastf1-cache/
-
 # MLflow local artifacts
 mlruns/
 mlartifacts/

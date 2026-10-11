@@ -18,7 +18,7 @@ kg. If it differs a lot from the 0.03 default, pass the estimate to
 ``preprocess --fuel-effect``.
 
 Usage:
-    python -m src.data.fuel_effect --raw-dir data/raw_openf1
+    python -m src.data.fuel_effect --raw-dir data/raw
 """
 
 from __future__ import annotations

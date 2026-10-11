@@ -1,6 +1,8 @@
-"""Tests for src.data.fetch_openf1 using mocked HTTP and hand-built OpenF1 tables."""
+"""Tests for src.data.fetch_data using mocked HTTP and hand-built OpenF1 tables."""
 
 from __future__ import annotations
+
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -8,7 +10,6 @@ import pytest
 import requests
 
 from src.data import fetch_data as fd
-from src.data import fetch_openf1 as of
 from src.data import preprocess as pp
 
 BASE = pd.Timestamp("2024-05-05 13:00", tz="UTC")
@@ -29,7 +30,7 @@ def make_tables():
                     "is_pit_out_lap": lap == 31,
                     "date_start": None
                     if lap == 1
-                    else (BASE + pd.Timedelta(f"{90 * lap}s")).isoformat(),
+                    else (BASE + timedelta(seconds=90 * lap)).isoformat(),
                 }
             )
         stints.append(
@@ -41,7 +42,7 @@ def make_tables():
              "lap_start": 31, "lap_end": None, "tyre_age_at_start": 3}
         )  # fmt: skip
     weather = [
-        {"date": (BASE + pd.Timedelta(f"{m}min")).isoformat(), "air_temperature": 25.0,
+        {"date": (BASE + timedelta(minutes=m)).isoformat(), "air_temperature": 25.0,
          "track_temperature": 40.0, "rainfall": 0}
         for m in range(120)
     ]  # fmt: skip
@@ -62,7 +63,7 @@ def make_tables():
 
 @pytest.fixture()
 def frame() -> pd.DataFrame:
-    return of.build_session_frame(
+    return fd.build_session_frame(
         *make_tables(), year=2024, round_number=5, event_name="Miami"
     )
 
@@ -71,7 +72,7 @@ def lap_row(frame: pd.DataFrame, driver: str, lap: int) -> pd.Series:
     return frame[(frame["Driver"] == driver) & (frame["LapNumber"] == lap)].iloc[0]
 
 
-def test_schema_matches_fastf1_raw_contract(frame) -> None:
+def test_schema_matches_preprocess_contract(frame) -> None:
     assert set(pp.REQUIRED_RAW_COLUMNS) <= set(frame.columns)
     assert len(frame) == 2 * LAPS
 
@@ -115,7 +116,7 @@ def test_track_status_codes(frame) -> None:
 def test_weather_is_filled_even_when_a_lap_has_no_start_time(frame) -> None:
     assert frame[["AirTemp", "TrackTemp"]].notna().all().all()
     assert (frame["TrackTemp"] == 40.0).all()
-    assert (frame["Rainfall"] == False).all()
+    assert not frame["Rainfall"].any()
 
 
 def test_weather_outside_tolerance_stays_missing() -> None:
@@ -123,7 +124,7 @@ def test_weather_outside_tolerance_stays_missing() -> None:
     weather = weather.iloc[
         :1
     ]  # one reading at race start; later laps are > 15 min away
-    out = of.build_session_frame(
+    out = fd.build_session_frame(
         laps, stints, drivers, weather, control, 2024, 5, "Miami"
     )
     assert out.loc[out["LapNumber"] == 60, "TrackTemp"].isna().all()
@@ -140,7 +141,7 @@ def test_output_flows_through_preprocess(frame) -> None:
 def test_empty_tables_raise() -> None:
     laps, stints, drivers, weather, control = make_tables()
     with pytest.raises(ValueError, match="no laps or no stints"):
-        of.build_session_frame(
+        fd.build_session_frame(
             laps.iloc[0:0], stints, drivers, weather, control, 2024, 5, "X"
         )
 
@@ -149,7 +150,7 @@ def test_unterminated_safety_car_runs_to_the_end() -> None:
     control = pd.DataFrame(
         [{"category": "SafetyCar", "flag": None, "lap_number": 55, "message": "SAFETY CAR DEPLOYED", "date": "2024-05-05T14:00:00"}]
     )  # fmt: skip
-    status = of.build_track_status(control, 60)
+    status = fd.build_track_status(control, 60)
     assert status[54] == "1" and all(status[lap] == "4" for lap in range(55, 61))
 
 
@@ -161,13 +162,13 @@ def test_vsc_and_red_flag_codes() -> None:
             {"category": "Flag", "flag": "RED", "lap_number": 30, "message": "RED FLAG", "date": "3"},
         ]
     )  # fmt: skip
-    status = of.build_track_status(control, 40)
+    status = fd.build_track_status(control, 40)
     assert "6" in status[5] and "6" in status[6] and "7" in status[7]
     assert "5" in status[30] and "5" in status[31] and status[32] == "1"
 
 
 def test_no_race_control_means_all_green() -> None:
-    assert (of.build_track_status(pd.DataFrame(), 10) == "1").all()
+    assert (fd.build_track_status(pd.DataFrame(), 10) == "1").all()
 
 
 # ---------------------------------------------------------------- HTTP
@@ -186,16 +187,16 @@ class FakeResponse:
 
 @pytest.fixture()
 def fast_http(monkeypatch):
-    monkeypatch.setattr(of.time, "sleep", lambda s: None)
-    monkeypatch.setattr(of, "_last_call", 0.0)
+    monkeypatch.setattr(fd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fd, "_last_call", 0.0)
 
 
 def test_get_json_retries_429_then_succeeds(monkeypatch, fast_http) -> None:
     replies = iter(
         [FakeResponse(429, headers={"Retry-After": "1"}), FakeResponse(200, [{"a": 1}])]
     )
-    monkeypatch.setattr(of.requests, "get", lambda *a, **k: next(replies))
-    assert of.get_json("laps", {"session_key": 1}) == [{"a": 1}]
+    monkeypatch.setattr(fd.requests, "get", lambda *a, **k: next(replies))
+    assert fd.get_json("laps", {"session_key": 1}) == [{"a": 1}]
 
 
 def test_get_json_retries_connection_errors(monkeypatch, fast_http) -> None:
@@ -207,8 +208,8 @@ def test_get_json_retries_connection_errors(monkeypatch, fast_http) -> None:
             raise requests.ConnectionError("reset by peer")
         return FakeResponse(200, [{"ok": True}])
 
-    monkeypatch.setattr(of.requests, "get", flaky)
-    assert of.get_json("laps", {}) == [{"ok": True}]
+    monkeypatch.setattr(fd.requests, "get", flaky)
+    assert fd.get_json("laps", {}) == [{"ok": True}]
     assert calls["n"] == 3
 
 
@@ -219,21 +220,21 @@ def test_get_json_gives_up_after_max_attempts(monkeypatch, fast_http) -> None:
         calls["n"] += 1
         return FakeResponse(503)
 
-    monkeypatch.setattr(of.requests, "get", down)
+    monkeypatch.setattr(fd.requests, "get", down)
     with pytest.raises(RuntimeError, match="failed after"):
-        of.get_json("laps", {})
-    assert calls["n"] == of.MAX_ATTEMPTS
+        fd.get_json("laps", {})
+    assert calls["n"] == fd.MAX_ATTEMPTS
 
 
 def test_get_json_empty_result_shapes(monkeypatch, fast_http) -> None:
-    monkeypatch.setattr(of.requests, "get", lambda *a, **k: FakeResponse(404))
-    assert of.get_json("laps", {}) == []
+    monkeypatch.setattr(fd.requests, "get", lambda *a, **k: FakeResponse(404))
+    assert fd.get_json("laps", {}) == []
     monkeypatch.setattr(
-        of.requests,
+        fd.requests,
         "get",
         lambda *a, **k: FakeResponse(200, {"detail": "No results found."}),
     )
-    assert of.get_json("laps", {}) == []
+    assert fd.get_json("laps", {}) == []
 
 
 def test_get_json_does_not_retry_client_errors(monkeypatch, fast_http) -> None:
@@ -243,9 +244,9 @@ def test_get_json_does_not_retry_client_errors(monkeypatch, fast_http) -> None:
         calls["n"] += 1
         return FakeResponse(422)
 
-    monkeypatch.setattr(of.requests, "get", bad)
+    monkeypatch.setattr(fd.requests, "get", bad)
     with pytest.raises(RuntimeError, match="HTTP 422"):
-        of.get_json("laps", {})
+        fd.get_json("laps", {})
     assert calls["n"] == 1
 
 
@@ -253,7 +254,7 @@ def test_get_json_does_not_retry_client_errors(monkeypatch, fast_http) -> None:
 
 
 def sessions_table() -> pd.DataFrame:
-    future = (pd.Timestamp.now(tz="UTC") + pd.Timedelta("30D")).isoformat()
+    future = (pd.Timestamp.now(tz="UTC") + timedelta(days=30)).isoformat()
     return pd.DataFrame(
         [
             {"session_key": 30, "date_start": "2024-03-10T15:00:00+00:00", "is_cancelled": False, "location": "B"},
@@ -265,23 +266,23 @@ def sessions_table() -> pd.DataFrame:
 
 
 def test_list_race_sessions_orders_and_drops_cancelled_and_future(monkeypatch) -> None:
-    monkeypatch.setattr(of, "fetch_table", lambda endpoint, params: sessions_table())
-    out = of.list_race_sessions(2024)
+    monkeypatch.setattr(fd, "fetch_table", lambda endpoint, params: sessions_table())
+    out = fd.list_race_sessions(2024)
     assert out["session_key"].tolist() == [10, 30]
     assert out["RoundNumber"].tolist() == [1, 2]
     assert out["EventName"].tolist() == ["A", "B"]
 
 
 def test_list_race_sessions_empty(monkeypatch) -> None:
-    monkeypatch.setattr(of, "fetch_table", lambda endpoint, params: pd.DataFrame())
-    assert of.list_race_sessions(2024).empty
+    monkeypatch.setattr(fd, "fetch_table", lambda endpoint, params: pd.DataFrame())
+    assert fd.list_race_sessions(2024).empty
 
 
 def test_fetch_all_writes_skips_and_records_failures(
     tmp_path, frame, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        of,
+        fd,
         "list_race_sessions",
         lambda year: pd.DataFrame(
             {"session_key": [10, 30], "RoundNumber": [1, 2], "EventName": ["A", "B"]}
@@ -293,11 +294,11 @@ def test_fetch_all_writes_skips_and_records_failures(
             raise RuntimeError("no stints")
         return frame
 
-    monkeypatch.setattr(of, "fetch_session", fake)
-    first = of.fetch_all([2024], None, tmp_path, force=False)
+    monkeypatch.setattr(fd, "fetch_session", fake)
+    first = fd.fetch_all([2024], None, tmp_path, force=False)
     assert first.written == ["2024_01_R.parquet"]
     assert first.failed == {"2024_02_R.parquet": "no stints"}
-    second = of.fetch_all([2024], None, tmp_path, force=False)
+    second = fd.fetch_all([2024], None, tmp_path, force=False)
     assert second.skipped == ["2024_01_R.parquet"]
     assert fd.is_valid_parquet(tmp_path / "2024_01_R.parquet")
 
@@ -306,20 +307,20 @@ def test_fetch_all_schedule_failure_is_recorded(tmp_path, monkeypatch) -> None:
     def boom(year):
         raise RuntimeError("offline")
 
-    monkeypatch.setattr(of, "list_race_sessions", boom)
-    report = of.fetch_all([2024, 2025], None, tmp_path, force=False)
+    monkeypatch.setattr(fd, "list_race_sessions", boom)
+    report = fd.fetch_all([2024, 2025], None, tmp_path, force=False)
     assert set(report.failed) == {"2024_schedule", "2025_schedule"}
 
 
 def test_parse_args_rejects_seasons_before_2023() -> None:
     with pytest.raises(SystemExit):
-        of.parse_args(["--years", "2022"])
-    assert of.parse_args(["--years", "2023", "2024"]).years == [2023, 2024]
+        fd.parse_args(["--years", "2022"])
+    assert fd.parse_args(["--years", "2023", "2024"]).years == [2023, 2024]
 
 
 def test_main_exit_codes(tmp_path, frame, monkeypatch) -> None:
     monkeypatch.setattr(
-        of,
+        fd,
         "list_race_sessions",
         lambda year: pd.DataFrame(
             {
@@ -329,15 +330,15 @@ def test_main_exit_codes(tmp_path, frame, monkeypatch) -> None:
             }
         ),
     )
-    monkeypatch.setattr(of, "fetch_session", lambda *a: frame)
-    assert of.main(["--years", "2024", "--out-dir", str(tmp_path)]) == 0
+    monkeypatch.setattr(fd, "fetch_session", lambda *a: frame)
+    assert fd.main(["--years", "2024", "--out-dir", str(tmp_path)]) == 0
 
     def failing(*a):
         raise RuntimeError("down")
 
-    monkeypatch.setattr(of, "fetch_session", failing)
+    monkeypatch.setattr(fd, "fetch_session", failing)
     empty = tmp_path / "other"
-    assert of.main(["--years", "2024", "--out-dir", str(empty)]) == 1
+    assert fd.main(["--years", "2024", "--out-dir", str(empty)]) == 1
 
 
 def test_fetch_session_validates_thin_data(monkeypatch) -> None:
@@ -350,9 +351,9 @@ def test_fetch_session_validates_thin_data(monkeypatch) -> None:
         "weather": weather,
         "race_control": control,
     }
-    monkeypatch.setattr(of, "fetch_table", lambda endpoint, params: tables[endpoint])
+    monkeypatch.setattr(fd, "fetch_table", lambda endpoint, params: tables[endpoint])
     with pytest.raises(ValueError, match="timed laps"):
-        of.fetch_session(1, 2024, 5, "Miami")
+        fd.fetch_session(1, 2024, 5, "Miami")
 
 
 def test_mixed_iso_timestamp_formats_are_parsed() -> None:
@@ -370,7 +371,66 @@ def test_mixed_iso_timestamp_formats_are_parsed() -> None:
     weather["date"] = weather["date"].map(
         lambda v: v.replace("+00:00", ".5+00:00") if v.endswith("0:00+00:00") else v
     )
-    out = of.build_session_frame(
+    out = fd.build_session_frame(
         laps, stints, drivers, weather, control, 2024, 5, "Miami"
     )
     assert out["TrackTemp"].notna().all()
+
+
+def test_atomic_write_leaves_no_temp_file_and_no_partial_file(
+    tmp_path, frame, monkeypatch
+) -> None:
+    path = tmp_path / "x.parquet"
+    fd.write_parquet_atomic(frame, path)
+    assert fd.is_valid_parquet(path)
+    assert [p.name for p in tmp_path.iterdir()] == ["x.parquet"]
+
+    target = tmp_path / "y.parquet"
+
+    def boom(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+    with pytest.raises(OSError, match="disk full"):
+        fd.write_parquet_atomic(frame, target)
+    assert not target.exists()
+    assert not list(tmp_path.glob("y*"))
+
+
+def test_is_valid_parquet_detects_corruption(tmp_path) -> None:
+    bad = tmp_path / "bad.parquet"
+    bad.write_bytes(b"not parquet")
+    assert not fd.is_valid_parquet(bad)
+    assert not fd.is_valid_parquet(tmp_path / "missing.parquet")
+
+
+def test_fetch_all_redownloads_corrupt_file(tmp_path, frame, monkeypatch) -> None:
+    monkeypatch.setattr(
+        fd,
+        "list_race_sessions",
+        lambda year: pd.DataFrame(
+            {"session_key": [10], "RoundNumber": [1], "EventName": ["A"]}
+        ),
+    )
+    monkeypatch.setattr(fd, "fetch_session", lambda *a: frame)
+    (tmp_path / "2024_01_R.parquet").write_bytes(b"truncated")
+    report = fd.fetch_all([2024], None, tmp_path, force=False)
+    assert report.written == ["2024_01_R.parquet"]
+    assert fd.is_valid_parquet(tmp_path / "2024_01_R.parquet")
+
+
+def test_fetch_all_respects_rounds_filter(tmp_path, frame, monkeypatch) -> None:
+    monkeypatch.setattr(
+        fd,
+        "list_race_sessions",
+        lambda year: pd.DataFrame(
+            {"session_key": [10, 20], "RoundNumber": [1, 2], "EventName": ["A", "B"]}
+        ),
+    )
+    monkeypatch.setattr(fd, "fetch_session", lambda *a: frame)
+    report = fd.fetch_all([2024], [2], tmp_path, force=False)
+    assert report.written == ["2024_02_R.parquet"]
+
+
+def test_failure_rate_of_empty_report_is_zero() -> None:
+    assert fd.FetchReport().failure_rate == 0.0
