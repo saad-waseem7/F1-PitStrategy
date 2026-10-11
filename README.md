@@ -76,6 +76,18 @@ car or VSC, inaccurate or deleted, slower than 107 percent of the driver's
 median, or in a stint with fewer than 8 clean laps. Duplicate laps are removed
 and the output is validated (no NaN, sane ranges, label within -2..5 s).
 
+**Calibrating the fuel effect.** Do not pick it by model R2: fuel burns off in step
+with the lap, so an over-large value creates a tyre-age-like trend that the wear
+model then "explains". Estimate it from raw lap times instead, where tyre age and
+fuel vary independently across stints:
+
+```bash
+python -m src.data.fuel_effect --raw-dir data/raw_openf1
+```
+
+It prints the net effect (fuel burn plus track evolution) in s/kg with a 95%
+interval. Pass the result to `preprocess --fuel-effect`.
+
 **Assumption to know about:** the label magnitude depends on the fuel effect
 (0.03 s per kg, 100 kg start). At 0.02, 0.03 and 0.04 the median loss for
 tyres 20+ laps old is 0.45, 0.78 and 1.13 s. Report it as an assumption.
