@@ -42,6 +42,24 @@ python -m src.data.fetch_data --years 2024 --rounds 5 6 --force   # re-download 
   stops, keeps everything saved and exits with code 2. Re-run the same command
   about an hour later; finished races are skipped.
 
+### Alternative source: OpenF1 (2023 onwards)
+
+FastF1 can fail on connection resets and its 500 calls/hour limit. OpenF1
+(openf1.org, free, no key) serves the same information as plain JSON:
+
+```bash
+python -m src.data.fetch_openf1 --years 2023 2024 2025 --out-dir data/raw_openf1
+python -m src.data.preprocess --raw-dir data/raw_openf1
+```
+
+* It writes the same raw schema as `fetch_data`, so preprocessing and training do
+  not change. Historical data starts in 2023, the current car and tyre generation.
+* Keep it in its own folder. Its round numbers count non-cancelled races in
+  order, so they can differ from FastF1 after a cancellation (2023 Imola).
+* `TrackStatus` is rebuilt from race-control text messages and the tyre age from
+  `tyre_age_at_start`. Before trusting it, compare one race with FastF1: the
+  share of laps kept by preprocessing and the tyre ages should be close.
+
 ## 2. Preprocess
 
 ```bash
