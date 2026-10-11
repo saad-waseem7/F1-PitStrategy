@@ -149,3 +149,66 @@ def test_track_status_helper() -> None:
 def test_load_raw_empty_dir_raises(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         pp.load_raw(tmp_path)
+
+
+def test_fuel_effect_parameter_changes_target_as_expected() -> None:
+    raw = make_raw(("VER",))
+    default = pp.build_dataset(raw)
+    explicit = pp.build_dataset(raw, fuel_effect=pp.FUEL_EFFECT_S_PER_KG)
+    pd.testing.assert_frame_equal(default, explicit)
+
+    # A larger fuel constant credits earlier (heavy) laps with more fuel
+    # penalty, so later laps look relatively slower and measured loss grows.
+    heavy = pp.build_dataset(raw, fuel_effect=0.04)
+    key = ["Driver", "Stint", "race_lap"]
+    merged = default.merge(heavy, on=key, suffixes=("_base", "_heavy"))
+    late = merged[merged["lap_number_base"] >= 10]
+    assert len(late) > 0
+    assert (late["lap_time_loss_heavy"] > late["lap_time_loss_base"]).all()
+
+
+def test_negative_fuel_effect_rejected() -> None:
+    with pytest.raises(ValueError, match="fuel_effect"):
+        pp.build_dataset(make_raw(), fuel_effect=-0.01)
+
+
+def test_duplicate_laps_are_dropped_not_double_counted() -> None:
+    raw = make_raw()
+    once = pp.build_dataset(raw)
+    twice = pp.build_dataset(pd.concat([raw, raw], ignore_index=True))
+    pd.testing.assert_frame_equal(once, twice)
+
+
+def test_validate_output_rejects_contract_violations() -> None:
+    good = pp.build_dataset(make_raw())
+    pp.validate_output(good)
+    for column, value in [
+        ("tire_age", -1),
+        ("lap_number", 0),
+        ("fuel_load_est", -5.0),
+        ("lap_time_loss", 99.0),
+        ("track_temp", np.nan),
+    ]:
+        bad = good.copy()
+        bad.loc[0, column] = value
+        with pytest.raises(ValueError):
+            pp.validate_output(bad)
+    dup = pd.concat([good, good.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="duplicate"):
+        pp.validate_output(dup)
+
+
+def test_thin_races_are_warned_about(caplog) -> None:
+    out = pp.build_dataset(make_raw())  # the synthetic race keeps < MIN_RACE_ROWS rows
+    with caplog.at_level("WARNING"):
+        pp.log_race_coverage(out)
+    assert "fewer than" in caplog.text
+
+
+def test_main_writes_atomically(tmp_path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    make_raw().to_parquet(raw_dir / "2024_05_R.parquet")
+    out = tmp_path / "out" / "laps.parquet"
+    assert pp.main(["--raw-dir", str(raw_dir), "--out", str(out)]) == 0
+    assert [p.name for p in out.parent.iterdir()] == ["laps.parquet"]
