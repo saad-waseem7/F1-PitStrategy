@@ -37,6 +37,10 @@ python -m src.data.fetch_data --years 2024 --rounds 5 6 --force   # re-download 
   15 percent failed (`--max-failure-rate`). A few failures are normal: cancelled
   races such as Emilia-Romagna 2023 have no data.
 * FastF1 lap data is dependable from 2018 onwards.
+* **Rate limit:** FastF1 allows about 500 API calls per hour and each race costs
+  several, so a full download takes a few hours. When the limit is hit the run
+  stops, keeps everything saved and exits with code 2. Re-run the same command
+  about an hour later; finished races are skipped.
 
 ## 2. Preprocess
 

@@ -189,3 +189,50 @@ def test_sprint_schedule_keeps_only_sprint_weekends(monkeypatch) -> None:
     )
     assert fd.list_completed_rounds(2024, "S")["RoundNumber"].tolist() == [2]
     assert fd.list_completed_rounds(2024, "R")["RoundNumber"].tolist() == [1, 2]
+
+
+def _rate_limit_error() -> Exception:
+    return fd.fastf1.exceptions.RateLimitExceededError("any API: 500 calls/h")
+
+
+def test_rate_limit_is_not_retried(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def limited(year, rnd, code):
+        calls["n"] += 1
+        raise _rate_limit_error()
+
+    monkeypatch.setattr(fd, "fetch_session", limited)
+    monkeypatch.setattr(fd.time, "sleep", lambda s: None)
+    with pytest.raises(fd.fastf1.exceptions.RateLimitExceededError):
+        fd.fetch_with_retry(2024, 1, "R", retries=3, delay_s=0)
+    assert calls["n"] == 1
+
+
+def test_rate_limit_stops_run_keeps_progress_and_exits_2(
+    tmp_path, frame, stub_schedule, monkeypatch
+) -> None:
+    seen: list[int] = []
+
+    def fake_fetch(year, rnd, code, retries, delay):
+        seen.append(rnd)
+        if rnd == 2:
+            raise _rate_limit_error()
+        return frame
+
+    monkeypatch.setattr(fd, "fetch_with_retry", fake_fetch)
+    monkeypatch.setattr(fd, "enable_cache", lambda d: None)
+    code = fd.main(["--years", "2023", "2024", "--out-dir", str(tmp_path)])
+    assert code == 2
+    assert seen == [1, 2]  # stopped immediately: no round 3, no 2024 season
+    assert [p.name for p in tmp_path.iterdir()] == ["2023_01_R.parquet"]
+
+
+def test_rate_limit_on_schedule_stops_run(tmp_path, monkeypatch) -> None:
+    def limited(year, session_code="R"):
+        raise _rate_limit_error()
+
+    monkeypatch.setattr(fd, "list_completed_rounds", limited)
+    report = fd.fetch_all([2024, 2025], "R", None, tmp_path, force=False)
+    assert report.rate_limited
+    assert list(report.failed) == ["2024_schedule"]

@@ -10,6 +10,11 @@ Reliability features, because a half-downloaded dataset silently biases a model:
 * **Corrupt-file recovery.** Existing files are checked and re-downloaded if
   unreadable or empty.
 * **Retries.** Transient network errors are retried with a growing delay.
+* **Rate limit.** FastF1 allows about 500 API calls per hour, and each race costs
+  several, so a full download takes a few hours. When the limit is hit the run
+  stops at once (retrying only burns calls), keeps everything already saved and
+  exits with code 2. Re-run the same command an hour later; finished races are
+  skipped, so it resumes where it stopped.
 * **Validation.** A session with too few timed laps is rejected, not saved.
 * **Completeness report.** After every run the missing sessions are listed and
   the exit code is non-zero when too many failed. A few failures are normal
@@ -82,6 +87,7 @@ class FetchReport:
     written: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)  # file name -> reason
+    rate_limited: bool = False  # FastF1 refused further calls; run was cut short
 
     @property
     def attempted(self) -> int:
@@ -244,6 +250,8 @@ def fetch_with_retry(
     for attempt in range(retries + 1):
         try:
             return fetch_session(year, rnd, session_code)
+        except fastf1.exceptions.RateLimitExceededError:
+            raise  # retrying cannot help and only spends more calls
         except Exception as exc:
             if attempt == retries:
                 raise
@@ -279,6 +287,10 @@ def fetch_all(
     for year in years:
         try:
             events = list_completed_rounds(year, session_code)
+        except fastf1.exceptions.RateLimitExceededError as exc:
+            report.failed[f"{year}_schedule"] = str(exc)
+            report.rate_limited = True
+            return report
         except Exception as exc:  # network/schedule failure: skip the season
             logger.exception("Could not load schedule for %s", year)
             report.failed[f"{year}_schedule"] = str(exc)
@@ -298,6 +310,10 @@ def fetch_all(
                 write_parquet_atomic(frame, path)
                 logger.info("Wrote %s (%d laps)", path.name, len(frame))
                 report.written.append(path.name)
+            except fastf1.exceptions.RateLimitExceededError as exc:
+                report.failed[path.name] = str(exc)
+                report.rate_limited = True
+                return report
             except Exception as exc:  # noqa: BLE001  record and continue
                 logger.error("Failed %s round %s: %s", year, rnd, exc)
                 report.failed[path.name] = str(exc)
@@ -350,6 +366,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     for name, reason in sorted(report.failed.items()):
         logger.warning("MISSING %s: %s", name, reason)
+    if report.rate_limited:
+        logger.error(
+            "FastF1 rate limit (about 500 calls/hour) reached after %d new races. "
+            "Progress is saved; re-run the same command in about an hour.",
+            len(report.written),
+        )
+        return 2
     if report.failure_rate > args.max_failure_rate:
         logger.error(
             "Failure rate %.0f%% exceeds %.0f%%; the dataset is incomplete",
