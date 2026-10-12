@@ -1,0 +1,21 @@
+# Data is tracked by DVC. Only *.dvc pointer files go to Git.
+/data/raw
+/data/processed
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Experiment artifacts
+mlruns/
+mlartifacts/
+mlflow.db
+
+# Local env and editors
+.env
+.vscode/
+.idea/
+.DS_Store

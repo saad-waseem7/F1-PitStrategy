@@ -1,0 +1,79 @@
+schema: '2.0'
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+    - path: src/config.py
+      hash: md5
+      md5: 5aedd1a45c77aac9b5e8ef23b3e99620
+      size: 1244
+    - path: src/data/ingest.py
+      hash: md5
+      md5: ab5ac1dc20a3368a2ec5299096cd2e75
+      size: 7914
+    params:
+      params.yaml:
+        ingest:
+          base_url: https://api.openf1.org/v1
+          years:
+          - 2023
+          - 2024
+          - 2025
+          session_name: Race
+          request_delay_s: 2.5
+          retry_delay_s: 3
+          max_retries: 20
+          empty_retries: 2
+          timeout_s: 60
+    outs:
+    - path: data/raw
+      hash: md5
+      md5: 658326390ec268cbd2b377c2456f16fd.dir
+      size: 3258633
+      nfiles: 350
+  preprocess:
+    cmd: python -m src.data.preprocess
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: 658326390ec268cbd2b377c2456f16fd.dir
+      size: 3258633
+      nfiles: 350
+    - path: src/config.py
+      hash: md5
+      md5: 5aedd1a45c77aac9b5e8ef23b3e99620
+      size: 1244
+    - path: src/data/preprocess.py
+      hash: md5
+      md5: 6784d71364dd75a96632e7f356ec84c3
+      size: 15189
+    params:
+      params.yaml:
+        preprocess:
+          dry_only: true
+          wet_session_fraction: 0.05
+          fuel_correction_s_per_lap: 0.05
+          reference_scope: stint
+          reference_quantile: 0.1
+          outlier_ratio: 1.07
+          min_laps_per_driver: 15
+          min_stint_laps: 8
+          pit_loss_threshold_s: 1.0
+          pit_rolling_window: 3
+          decay_window: 5
+          temp_delta_lag_laps: 5
+          train_years:
+          - 2023
+          - 2024
+          test_years:
+          - 2025
+    outs:
+    - path: data/processed
+      hash: md5
+      md5: 4963df3eea5140cbf9b6d9937450267c.dir
+      size: 1791311
+      nfiles: 3
+    - path: metrics/preprocess_report.json
+      hash: md5
+      md5: 8e1175009ae976a3e770fb50983e868a
+      size: 367

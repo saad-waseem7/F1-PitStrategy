@@ -1,0 +1,24 @@
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+      - src/data/ingest.py
+      - src/config.py
+    params:
+      - ingest
+    outs:
+      - data/raw:
+          persist: true
+  preprocess:
+    cmd: python -m src.data.preprocess
+    deps:
+      - src/data/preprocess.py
+      - src/config.py
+      - data/raw
+    params:
+      - preprocess
+    outs:
+      - data/processed
+    metrics:
+      - metrics/preprocess_report.json:
+          cache: false
