@@ -5,8 +5,8 @@ stages:
     deps:
     - path: src/config.py
       hash: md5
-      md5: 5aedd1a45c77aac9b5e8ef23b3e99620
-      size: 1244
+      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
+      size: 1288
     - path: src/data/ingest.py
       hash: md5
       md5: ab5ac1dc20a3368a2ec5299096cd2e75
@@ -41,8 +41,8 @@ stages:
       nfiles: 350
     - path: src/config.py
       hash: md5
-      md5: 5aedd1a45c77aac9b5e8ef23b3e99620
-      size: 1244
+      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
+      size: 1288
     - path: src/data/preprocess.py
       hash: md5
       md5: 6784d71364dd75a96632e7f356ec84c3
@@ -77,3 +77,61 @@ stages:
       hash: md5
       md5: 8e1175009ae976a3e770fb50983e868a
       size: 367
+  train:
+    cmd: python -m src.models.train
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 4963df3eea5140cbf9b6d9937450267c.dir
+      size: 1791311
+      nfiles: 3
+    - path: src/config.py
+      hash: md5
+      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
+      size: 1288
+    - path: src/features.py
+      hash: md5
+      md5: fc2d3afdc1421fa3f89398bcf47b70cd
+      size: 1608
+    - path: src/models
+      hash: md5
+      md5: b431a2d48856d85d422f1fbefda6f040.dir
+      size: 62685
+      nfiles: 10
+    params:
+      params.yaml:
+        train:
+          seed: 42
+          cv_folds: 5
+          lgbm_trials: 15
+          lgbm_objective: huber
+          rf:
+            n_estimators: 300
+            min_samples_leaf: 5
+            max_features: 0.6
+          lgbm_classifier:
+            n_estimators: 400
+            learning_rate: 0.05
+            num_leaves: 31
+            min_child_samples: 40
+            subsample: 0.8
+            colsample_bytree: 0.8
+          min_lift_over_baseline: 0.05
+          min_improvement_for_champion: 0.01
+          latency_samples: 200
+          permutation_sample: 5000
+          mlflow:
+            tracking_uri: sqlite:///mlflow.db
+            artifact_root: mlartifacts
+            experiment: f1-pit-strategy
+            model_name: f1-pit-strategy
+    outs:
+    - path: metrics/train_metrics.json
+      hash: md5
+      md5: 9a05d860861d62d221135d46aeb2ce98
+      size: 1610
+    - path: models/champion
+      hash: md5
+      md5: 240dd5a0a7dcbe0cced4ad2e29b2ddaa.dir
+      size: 1747464
+      nfiles: 18
