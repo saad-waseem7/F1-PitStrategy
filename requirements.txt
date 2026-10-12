@@ -8,7 +8,7 @@ requests>=2.31
 
 # Versioning and tracking
 dvc>=3.50,<4
-mlflow>=2.14,<4
+mlflow>=3.0,<4
 
 # Modeling
 scikit-learn>=1.4,<2
