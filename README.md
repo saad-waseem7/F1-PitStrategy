@@ -36,6 +36,9 @@ Always run commands from the repository root. The code imports `src.*`, so runni
 OpenF1 API --ingest--> data/raw/<endpoint>/<session>.parquet
                           --preprocess--> data/processed/{features,train,test}.parquet
                                           metrics/preprocess_report.json
+                                             --train--> models/champion        (deployable model)
+                                                        metrics/train_metrics.json
+                                                        mlflow.db, mlartifacts/ (local registry)
 ```
 
 Stages are defined in `dvc.yaml`; all tunable values live in `params.yaml`.
@@ -44,6 +47,7 @@ Stages are defined in `dvc.yaml`; all tunable values live in `params.yaml`.
 |---|---|---|
 | `ingest` | `python -m src.data.ingest` | `data/raw/` (laps, stints, weather, race_control, sessions) |
 | `preprocess` | `python -m src.data.preprocess` | `data/processed/`, `metrics/preprocess_report.json` |
+| `train` | `python -m src.models.train` | `models/champion`, `metrics/train_metrics.json` |
 
 Ingestion is resumable: a session whose `laps` file exists is skipped, files are written atomically, and `persist: true` in `dvc.yaml` stops DVC from deleting `data/raw` before a rerun. Throttled, failed, truncated or empty responses are retried after a fixed 3 seconds (a longer `Retry-After` from the server is honoured). After the retries are used up the run fails loudly instead of producing a partial dataset.
 
@@ -77,6 +81,46 @@ The three lag features use only earlier laps of the same stint, never the curren
 
 **Split.** By season, never random: train on 2023 and 2024, test on 2025. A random lap split would put laps from the same stint in both sets.
 
+## Training and model registry
+
+`python -m src.models.train` (or `dvc repro`) trains on 2023 and 2024 and evaluates once on 2025. One run produces two models of the same algorithm family and packages them as one.
+
+1. **Regressor** (predicts `pace_loss_s`) and **classifier** (predicts the probability of `pit_recommended`). Candidates are a naive lookup baseline, Random Forest and LightGBM (15 random-search trials, Huber loss, which is robust to traffic spikes in lap times). The winner has the lowest out-of-fold MAE.
+2. **Cross-validation holds out whole races** (`GroupKFold` by session), so laps of one race never sit on both sides of a fold.
+3. **Pit threshold.** The probability cut-off that maximises F1 is chosen on out-of-fold predictions from the training years only, never on the test year.
+4. **Gates** (`params.yaml`, section `train`). The run fails, nothing is registered and the report is still written, if the regressor's test MAE is not at least 5% better than the baseline (`min_lift_over_baseline`), or if the classifier's PR-AUC is below the compound-and-tyre-age lookup baseline (`min_pr_auc_lift_over_baseline`). The second gate shows that lap-time features add value beyond tyre age.
+5. **Registry.** Every successful run registers a new version in the local MLflow registry (`mlflow.db`). The alias `champion` moves to it only if its test MAE is at least 1% better than the current champion's. The champion is exported to `models/champion`.
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db     # compare runs at http://127.0.0.1:5000
+```
+
+Each MLflow run records the parameters, cross-validation and test metrics, permutation importance, single-row latency, the git commit and the MD5 of the train and test files. `metrics/train_metrics.json` holds the same summary: `cv_mae` and `baseline_test_mae` for the regressor, `test_classification` and `baseline_test_classification` for the classifier, `latency`, `top_features`, and `promoted`.
+
+**Reproducibility.** Seeds live in `params.yaml`, folds are deterministic and LightGBM runs with its deterministic flags, so the same data, parameters and seed give the same model regardless of thread count. Package versions are recorded in the model's `requirements.txt`.
+
+**Registry scope.** `mlflow.db` and `mlartifacts/` exist per machine and are not shared. What is shared is `models/champion`, through DVC.
+
+## Using the model
+
+```python
+import mlflow.pyfunc
+import pandas as pd
+
+model = mlflow.pyfunc.load_model("models/champion")
+row = pd.DataFrame([{
+    "tyre_age": 18, "compound": "MEDIUM", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
+    "track_temperature": 41.0, "air_temperature": 28.0, "humidity": 45.0, "rainfall": 0.0, "wind_speed": 2.5,
+    "track_temp_delta": 1.2, "prev_lap_delta": 0.15, "pace_decay_slope": 0.08,
+}])
+model.predict(row)   # DataFrame with pace_loss_s, pit_probability, pit_recommended
+```
+
+- All 13 feature columns are required (see "Features"); a missing column raises `ValueError`. Extra columns are ignored. Whole numbers may be sent as integers.
+- `compound` must be SOFT, MEDIUM or HARD (any case). Anything else, including INTERMEDIATE and WET, raises `ValueError`: the model is trained on dry races only, and a serving layer should answer with a 422 and not a guess.
+- `track_temp_delta`, `prev_lap_delta` and `pace_decay_slope` may be missing (`None` or `NaN`). They are naturally missing early in a stint.
+- The model is a pickle. Load it only from the team's own DVC remote, with the package versions in `models/champion/requirements.txt` and the same Python minor version it was trained on (3.11), for example a `python:3.11` Docker base image.
+
 ## Repository layout
 
 ```
@@ -86,9 +130,16 @@ src/config.py            paths and params loading
 src/data/ingest.py       OpenF1 download with retries
 src/data/preprocess.py   cleaning, targets, features, split
 src/data/diagnose_target.py   compares target definitions, estimates the fuel effect
+src/features.py          FeaturePreparer: the one place that turns rows into model input
+src/models/estimators.py baselines, Random Forest, LightGBM, search space
+src/models/evaluate.py   metrics, F1 threshold, single-row latency
+src/models/bundle.py     the deployable model (regressor + classifier + threshold)
+src/models/train.py      comparison, gates, MLflow logging, registry, export
 tests/                   pytest suite on synthetic OpenF1-shaped data
 metrics/                 small JSON reports, tracked by Git
+models/champion          the exported model, tracked by DVC
 data/                    tracked by DVC, never committed to Git
+mlflow.db  mlartifacts/  local MLflow registry (gitignored, one per machine)
 ```
 
 ## Team workflow
@@ -110,4 +161,6 @@ data/                    tracked by DVC, never committed to Git
 
 - Dry races only; wet-weather strategy is out of scope.
 - The pit flag is a heuristic derived from pace loss, not ground truth about team decisions. It ignores traffic, gaps, safety car timing and strategy.
+- Season 2025 selects the champion and is also the reported test set. That is acceptable for a handful of runs. Automated retraining needs a rolling holdout, otherwise the test metrics become optimistic.
+- Pace loss has a large noise floor (traffic, lapping, track position), so the regressor explains a minority of the variance. Judge it against the baseline in `metrics/train_metrics.json`, not by R2 alone. The pit flag is the more useful output.
 - The fuel and track-evolution correction (0.05 s per lap) is an estimate, and tyre degradation estimates depend on it. Absolute pace-loss values carry that uncertainty.

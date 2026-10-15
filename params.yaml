@@ -46,6 +46,7 @@ train:
     subsample: 0.8
     colsample_bytree: 0.8
   min_lift_over_baseline: 0.05    # fail the run if test MAE is not 5% better than the naive baseline
+  min_pr_auc_lift_over_baseline: 0.0   # fail if test PR-AUC is not above the compound+tyre-age lookup by this much
   min_improvement_for_champion: 0.01   # new model must beat champion test MAE by 1% to take the alias
   latency_samples: 200
   permutation_sample: 5000

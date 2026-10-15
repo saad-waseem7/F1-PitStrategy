@@ -11,14 +11,16 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from src.config import COMPOUNDS, FEATURE_COLUMNS
 
 NUMERIC_COLUMNS: tuple[str, ...] = tuple(c for c in FEATURE_COLUMNS if c != "compound")
+WET_COMPOUNDS: tuple[str, ...] = ("INTERMEDIATE", "WET")
 
 
 class FeaturePreparer(BaseEstimator, TransformerMixin):
     """Select FEATURE_COLUMNS in fixed order, cast numerics to float64, and encode `compound`
-    as a categorical with a fixed vocabulary. Extra columns are dropped. Missing columns and
-    unknown compounds raise ValueError instead of silently predicting garbage."""
+    as a categorical with a fixed vocabulary. Extra columns are dropped. Missing columns,
+    unknown compounds and wet-weather compounds raise ValueError instead of silently
+    predicting garbage: the models are trained on dry races only."""
 
-    def fit(self, X: pd.DataFrame, y=None) -> "FeaturePreparer":
+    def fit(self, X: pd.DataFrame, y=None) -> FeaturePreparer:
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -30,6 +32,9 @@ class FeaturePreparer(BaseEstimator, TransformerMixin):
         unknown = sorted(set(compound) - set(COMPOUNDS))
         if unknown:
             raise ValueError(f"Unknown compound(s) {unknown}; expected one of {list(COMPOUNDS)}")
+        wet = sorted(set(compound) & set(WET_COMPOUNDS))
+        if wet:
+            raise ValueError(f"Wet-weather compound(s) {wet} are out of scope: the model supports dry races only")
         out["compound"] = pd.Categorical(compound, categories=list(COMPOUNDS))
         out[list(NUMERIC_COLUMNS)] = out[list(NUMERIC_COLUMNS)].astype("float64")
         return out

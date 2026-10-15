@@ -6,7 +6,9 @@ Flow (everything is logged to MLflow):
   2. A classifier of the same family predicts the pit flag; its probability cut-off maximises F1
      on out-of-fold predictions (never on the test set).
   3. Final fit on all training rows, one evaluation on the held-out test year.
-  4. Gates: must beat the naive baseline by min_lift_over_baseline, else the run fails.
+  4. Gates: the regressor must beat the naive baseline by min_lift_over_baseline, and the
+     classifier must beat a compound-and-tyre-age lookup by min_pr_auc_lift_over_baseline
+     (PR-AUC), else the run fails and nothing is registered.
   5. The bundle (regressor + classifier + threshold) is registered; it takes the `champion`
      alias only if it beats the current champion's test MAE by min_improvement_for_champion.
   6. The current champion is exported to models/champion (the DVC-tracked deliverable).
@@ -24,7 +26,8 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import mlflow
 import mlflow.pyfunc
@@ -32,7 +35,6 @@ import numpy as np
 import pandas as pd
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
-from mlflow.models import infer_signature
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold
 
@@ -50,6 +52,7 @@ from src.features import NUMERIC_COLUMNS
 from src.models.bundle import PitStrategyModel
 from src.models.estimators import (
     GroupMedianBaseline,
+    GroupRateBaseline,
     build_classifier,
     build_regressor,
     sample_lgbm_params,
@@ -145,7 +148,11 @@ def _log_bundle(bundle: PitStrategyModel, X_sample: pd.DataFrame, model_name: st
     sample = _model_input_example(X_sample)
     kwargs: dict[str, Any] = dict(
         python_model=bundle,
-        signature=infer_signature(sample, bundle.predict_frame(sample)),
+        # No inferred signature: MLflow's would reject integer columns (JSON clients send ints) and
+        # would mark columns required or optional from five sample rows. FeaturePreparer is the
+        # contract: it casts types and raises a clear ValueError for missing columns or wet tyres.
+        signature=False,
+        input_example=sample,
         code_paths=[str(PROJECT_ROOT / "src")],  # ship src/ so the model loads without the repo installed
         pip_requirements=[f"{p}=={metadata.version(p)}" for p in ("mlflow", "scikit-learn", "lightgbm", "pandas", "numpy")],
         registered_model_name=model_name,
@@ -252,6 +259,15 @@ def run(
         test_cls = classification_metrics(c_test.to_numpy(), classifier.predict_proba(X_test)[:, 1], threshold)
         lift = (baseline_reg["mae"] - test_reg["mae"]) / baseline_reg["mae"]
 
+        # Classifier baseline: pit rate per (compound, tyre age), same protocol as the model
+        # (threshold from out-of-fold predictions on the training years only).
+        base_oof = oof_predict(GroupRateBaseline, X_train, c_train, groups, tp["cv_folds"], proba=True)
+        base_threshold = best_f1_threshold(c_train.to_numpy(), base_oof)
+        base_cls = classification_metrics(
+            c_test.to_numpy(), GroupRateBaseline().fit(X_train, c_train).predict_proba(X_test)[:, 1], base_threshold
+        )
+        pr_auc_lift = test_cls["pr_auc"] - base_cls["pr_auc"]
+
         bundle = PitStrategyModel(regressor, classifier, threshold)
         latency = single_row_latency_ms(bundle.predict_frame, X_test, int(tp["latency_samples"]))
 
@@ -260,13 +276,16 @@ def run(
         importance = permutation_importance(
             regressor, sample, y_test.loc[sample.index], scoring="neg_mean_absolute_error", n_repeats=3, random_state=seed, n_jobs=1
         )
-        ranking = sorted(zip(cols, importance.importances_mean), key=lambda kv: kv[1], reverse=True)
+        ranking = sorted(zip(cols, importance.importances_mean, strict=True), key=lambda kv: kv[1], reverse=True)
         top_features = [{"feature": f, "mae_increase_s": round(float(v), 5)} for f, v in ranking]
 
         mlflow.log_metrics(_finite({f"cv_cls_{k}": v for k, v in cv_cls.items()}))
         mlflow.log_metrics(_finite({f"test_{k}": v for k, v in test_reg.items()}))
         mlflow.log_metrics(_finite({f"test_cls_{k}": v for k, v in test_cls.items()}))
-        mlflow.log_metrics(_finite({"baseline_test_mae": baseline_reg["mae"], "lift_over_baseline": lift, **latency}))
+        mlflow.log_metrics(_finite({f"baseline_test_cls_{k}": v for k, v in base_cls.items()}))
+        mlflow.log_metrics(
+            _finite({"baseline_test_mae": baseline_reg["mae"], "lift_over_baseline": lift, "pr_auc_lift_over_baseline": pr_auc_lift, **latency})
+        )
         mlflow.log_dict({"permutation_importance": top_features}, "permutation_importance.json")
         mlflow.set_tag("selected_algorithm", algorithm)
 
@@ -278,19 +297,29 @@ def run(
             "lift_over_baseline": lift,
             "cv_classification": cv_cls,
             "test_classification": test_cls,
+            "baseline_test_classification": base_cls,
+            "pr_auc_lift_over_baseline": pr_auc_lift,
             "latency": latency,
             "top_features": top_features[:5],
             "mlflow_run_id": parent.info.run_id,
             "promoted": False,
         }
 
-        # 4. Gate: refuse to register a model that does not clearly beat the naive baseline
+        # 4. Gates: refuse to register a model that does not clearly beat the naive baselines
+        failures = []
         if lift < tp["min_lift_over_baseline"]:
-            _write_report(report, metrics_dir)
-            raise RuntimeError(
-                f"Model rejected: test MAE {test_reg['mae']:.4f} is only {lift:.1%} better than the naive baseline "
-                f"({baseline_reg['mae']:.4f}); required {tp['min_lift_over_baseline']:.0%}."
+            failures.append(
+                f"test MAE {test_reg['mae']:.4f} is only {lift:.1%} better than the naive baseline "
+                f"({baseline_reg['mae']:.4f}); required {tp['min_lift_over_baseline']:.0%}"
             )
+        if np.isfinite(pr_auc_lift) and pr_auc_lift < tp["min_pr_auc_lift_over_baseline"]:
+            failures.append(
+                f"test PR-AUC {test_cls['pr_auc']:.3f} is only {pr_auc_lift:+.3f} above the compound-and-tyre-age "
+                f"baseline ({base_cls['pr_auc']:.3f}); required {tp['min_pr_auc_lift_over_baseline']:+.3f}"
+            )
+        if failures:
+            _write_report(report, metrics_dir)
+            raise RuntimeError("Model rejected: " + "; ".join(failures) + ".")
 
         # 5. Register, tag, maybe promote
         info = _log_bundle(bundle, X_train, model_name)
@@ -304,8 +333,11 @@ def run(
     # 6. Export the current champion for DVC and the serving container
     export_champion(model_name, models_dir)
     _write_report(report, metrics_dir)
-    LOG.info("Test MAE %.4f s (baseline %.4f, lift %.1f%%), PR-AUC %.3f, p95 latency %.1f ms, promoted=%s",
-             test_reg["mae"], baseline_reg["mae"], lift * 100, test_cls["pr_auc"], latency["latency_ms_p95"], report["promoted"])
+    LOG.info(
+        "Test MAE %.4f s (baseline %.4f, lift %.1f%%), PR-AUC %.3f (baseline %.3f), p95 latency %.1f ms, promoted=%s",
+        test_reg["mae"], baseline_reg["mae"], lift * 100, test_cls["pr_auc"], base_cls["pr_auc"],
+        latency["latency_ms_p95"], report["promoted"],
+    )
     return report
 
 

@@ -1,5 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# SQLAlchemy internals used by MLflow; nothing we can act on
+filterwarnings = ["ignore:The ``noload`` loader strategy"]
 
 [tool.ruff]
 line-length = 120

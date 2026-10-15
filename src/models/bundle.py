@@ -30,5 +30,5 @@ class PitStrategyModel(mlflow.pyfunc.PythonModel):
             index=X.index,
         )
 
-    def predict(self, context, model_input, params=None) -> pd.DataFrame:  # noqa: D401 (mlflow signature)
+    def predict(self, context, model_input, params=None) -> pd.DataFrame:
         return self.predict_frame(pd.DataFrame(model_input))

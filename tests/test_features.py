@@ -46,3 +46,9 @@ def test_input_frame_is_not_mutated():
     frame = _row()
     FeaturePreparer().transform(frame)
     assert frame["compound"].iloc[0] == "MEDIUM" and not isinstance(frame["compound"].dtype, pd.CategoricalDtype)
+
+
+@pytest.mark.parametrize("wet", ["INTERMEDIATE", "WET", "wet"])
+def test_wet_compounds_are_rejected_as_out_of_scope(wet):
+    with pytest.raises(ValueError, match="dry races only"):
+        FeaturePreparer().transform(_row(compound=wet))

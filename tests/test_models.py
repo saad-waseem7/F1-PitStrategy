@@ -6,7 +6,13 @@ import pytest
 
 from src.config import FEATURE_COLUMNS
 from src.models.bundle import PitStrategyModel
-from src.models.estimators import GroupMedianBaseline, build_classifier, build_regressor, sample_lgbm_params
+from src.models.estimators import (
+    GroupMedianBaseline,
+    GroupRateBaseline,
+    build_classifier,
+    build_regressor,
+    sample_lgbm_params,
+)
 from src.models.evaluate import best_f1_threshold, classification_metrics, regression_metrics, single_row_latency_ms
 
 
@@ -96,3 +102,35 @@ def test_latency_helper_returns_ordered_percentiles():
     X, _, _ = make_features(50)
     out = single_row_latency_ms(lambda row: row.sum(numeric_only=True), X, 20)
     assert 0 <= out["latency_ms_p50"] <= out["latency_ms_p95"]
+
+
+def test_group_rate_baseline_returns_pit_rate_per_cell_with_fallback():
+    X = pd.DataFrame({"compound": ["SOFT"] * 4 + ["HARD"] * 4, "tyre_age": [5, 5, 5, 5, 9, 9, 9, 9]})
+    y = [1, 1, 1, 0, 0, 0, 0, 0]
+    model = GroupRateBaseline().fit(X, y)
+    proba = model.predict_proba(pd.DataFrame({"compound": ["SOFT", "HARD", "MEDIUM"], "tyre_age": [5, 9, 3]}))
+    assert proba.shape == (3, 2) and np.allclose(proba.sum(axis=1), 1.0)
+    assert proba[0, 1] == pytest.approx(0.75) and proba[1, 1] == 0.0
+    assert proba[2, 1] == pytest.approx(3 / 8)  # unseen cell falls back to the global rate
+    assert list(model.predict(pd.DataFrame({"compound": ["SOFT"], "tyre_age": [5]}))) == [1]
+
+
+def test_lightgbm_results_do_not_depend_on_thread_count():
+    X, y, c = make_features(1500, seed=5)
+    params = {"n_estimators": 80, "objective": "huber", "num_leaves": 63, "subsample": 0.7, "colsample_bytree": 0.6}
+
+    def fit_predict(n_jobs: int) -> np.ndarray:
+        model = build_regressor("lightgbm", params, seed=11)
+        model.set_params(model__n_jobs=n_jobs)
+        return model.fit(X, y).predict(X)
+
+    assert np.array_equal(fit_predict(1), fit_predict(2))
+
+
+def test_bundle_rejects_wet_compound_rows():
+    X, y, c = make_features(300)
+    reg = build_regressor("lightgbm", {"n_estimators": 20}, 1).fit(X, y)
+    clf = build_classifier("lightgbm", {}, {"n_estimators": 20}, 1).fit(X, c)
+    bundle = PitStrategyModel(reg, clf, threshold=0.5)
+    with pytest.raises(ValueError, match="dry races only"):
+        bundle.predict_frame(X.iloc[:2].assign(compound="WET"))

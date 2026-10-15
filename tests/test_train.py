@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from mlflow import MlflowClient
 
-from src.config import FEATURE_COLUMNS, TARGET_CLASSIFICATION, TARGET_REGRESSION, load_params
+from src.config import FEATURE_COLUMNS, load_params
 from src.models.train import run
 
 
@@ -66,6 +66,8 @@ def test_end_to_end_registers_champion_and_exports_loadable_model(workspace):
     assert report["promoted"] is True and report["model_version"] == "1"
     assert report["lift_over_baseline"] >= params["train"]["min_lift_over_baseline"]
     assert report["selected_algorithm"] in ("random_forest", "lightgbm")
+    assert report["baseline_test_classification"]["pr_auc"] < report["test_classification"]["pr_auc"]
+    assert report["pr_auc_lift_over_baseline"] >= params["train"]["min_pr_auc_lift_over_baseline"]
     assert json.loads((root / "metrics" / "train_metrics.json").read_text())["promoted"] is True
 
     model = mlflow.pyfunc.load_model(str(root / "models" / "champion"))
@@ -104,3 +106,40 @@ def test_too_few_sessions_for_cv_raises(workspace):
     params["train"]["cv_folds"] = 50
     with pytest.raises(ValueError, match="race sessions"):
         _run(params, root)
+
+
+def test_run_fails_when_classifier_does_not_beat_compound_age_baseline(workspace):
+    params, root = workspace
+    params["train"]["min_pr_auc_lift_over_baseline"] = 1.0  # impossible: PR-AUC cannot rise by 1.0
+    with pytest.raises(RuntimeError, match="PR-AUC"):
+        _run(params, root)
+    assert not (root / "models" / "champion").exists()
+    report = json.loads((root / "metrics" / "train_metrics.json").read_text())
+    assert report["promoted"] is False and "baseline_test_classification" in report
+
+
+def test_exported_model_rejects_wet_compounds(workspace):
+    params, root = workspace
+    _run(params, root)
+    model = mlflow.pyfunc.load_model(str(root / "models" / "champion"))
+    test = pd.read_parquet(root / "processed" / "test.parquet")
+    frame = test[list(FEATURE_COLUMNS)].head(3).assign(compound="INTERMEDIATE")
+    with pytest.raises(Exception, match="dry races only"):
+        model.predict(frame)
+
+
+def test_exported_model_accepts_integers_and_missing_lag_features(workspace):
+    """What a JSON client sends: ints for whole numbers, nulls for lag features, lowercase compound."""
+    params, root = workspace
+    _run(params, root)
+    model = mlflow.pyfunc.load_model(str(root / "models" / "champion"))
+    row = pd.DataFrame([{
+        "tyre_age": 18, "compound": "medium", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
+        "track_temperature": 41.0, "air_temperature": 28.0, "humidity": 45, "rainfall": 0, "wind_speed": 2.5,
+        "track_temp_delta": None, "prev_lap_delta": None, "pace_decay_slope": None,
+    }])
+    out = model.predict(row)
+    assert list(out.columns) == ["pace_loss_s", "pit_probability", "pit_recommended"]
+    assert len(out) == 1 and 0.0 <= float(out["pit_probability"].iloc[0]) <= 1.0
+    with pytest.raises(Exception, match="Missing feature columns"):
+        model.predict(row.drop(columns=["tyre_age"]))

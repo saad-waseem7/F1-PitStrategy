@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.pipeline import Pipeline
@@ -18,6 +18,10 @@ from src.config import COMPOUNDS
 from src.features import FeaturePreparer
 
 ALGORITHMS: tuple[str, ...] = ("random_forest", "lightgbm")
+
+# LightGBM's documented switches for identical results from identical data, params and seed,
+# independent of thread count (reproducibility requirement of the course).
+LGBM_STABLE: dict[str, Any] = {"deterministic": True, "force_row_wise": True}
 
 LGBM_SEARCH_SPACE: dict[str, list[Any]] = {
     "n_estimators": [200, 400, 600],
@@ -30,6 +34,13 @@ LGBM_SEARCH_SPACE: dict[str, list[Any]] = {
 }
 
 
+def _group_keys(X: pd.DataFrame, max_age: int) -> pd.DataFrame:
+    """(compound, tyre age capped at max_age) per row: the cell a baseline looks up."""
+    return pd.DataFrame(
+        {"compound": X["compound"].astype(str).to_numpy(), "age": np.minimum(X["tyre_age"].to_numpy(), max_age)}
+    )
+
+
 class GroupMedianBaseline(BaseEstimator, RegressorMixin):
     """Naive reference: median target per (compound, tyre_age capped at max_age).
     Any real model has to beat this to justify its complexity."""
@@ -38,11 +49,9 @@ class GroupMedianBaseline(BaseEstimator, RegressorMixin):
         self.max_age = max_age
 
     def _keys(self, X: pd.DataFrame) -> pd.DataFrame:
-        return pd.DataFrame(
-            {"compound": X["compound"].astype(str).to_numpy(), "age": np.minimum(X["tyre_age"].to_numpy(), self.max_age)}
-        )
+        return _group_keys(X, self.max_age)
 
-    def fit(self, X: pd.DataFrame, y) -> "GroupMedianBaseline":
+    def fit(self, X: pd.DataFrame, y) -> GroupMedianBaseline:
         keys = self._keys(X)
         keys["y"] = np.asarray(y, dtype=float)
         self.table_ = keys.groupby(["compound", "age"])["y"].median()
@@ -53,6 +62,31 @@ class GroupMedianBaseline(BaseEstimator, RegressorMixin):
         keys = self._keys(X)
         idx = pd.MultiIndex.from_frame(keys[["compound", "age"]])
         return self.table_.reindex(idx).fillna(self.global_median_).to_numpy()
+
+
+class GroupRateBaseline(BaseEstimator, ClassifierMixin):
+    """Naive reference classifier: share of pit-flagged laps per (compound, tyre_age capped at
+    max_age). It uses no pace information at all, so the real classifier must beat it to show
+    that lap-time features add value beyond "how old are the tyres"."""
+
+    def __init__(self, max_age: int = 40) -> None:
+        self.max_age = max_age
+
+    def fit(self, X: pd.DataFrame, y) -> GroupRateBaseline:
+        keys = _group_keys(X, self.max_age)
+        keys["y"] = np.asarray(y, dtype=float)
+        self.classes_ = np.array([0, 1])
+        self.table_ = keys.groupby(["compound", "age"])["y"].mean()
+        self.global_rate_ = float(keys["y"].mean())
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        idx = pd.MultiIndex.from_frame(_group_keys(X, self.max_age)[["compound", "age"]])
+        rate = self.table_.reindex(idx).fillna(self.global_rate_).to_numpy()
+        return np.column_stack([1.0 - rate, rate])
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
 def _forest_pipeline(estimator: Any) -> Pipeline:
@@ -71,7 +105,7 @@ def build_regressor(algorithm: str, params: dict[str, Any], seed: int) -> Pipeli
     if algorithm == "random_forest":
         return _forest_pipeline(RandomForestRegressor(random_state=seed, n_jobs=-1, **params))
     if algorithm == "lightgbm":
-        return _lgbm_pipeline(LGBMRegressor(random_state=seed, n_jobs=-1, verbose=-1, subsample_freq=1, **params))
+        return _lgbm_pipeline(LGBMRegressor(random_state=seed, n_jobs=-1, verbose=-1, subsample_freq=1, **LGBM_STABLE, **params))
     raise ValueError(f"Unknown algorithm {algorithm!r}; expected one of {ALGORITHMS}")
 
 
@@ -79,7 +113,7 @@ def build_classifier(algorithm: str, rf_params: dict[str, Any], lgbm_params: dic
     if algorithm == "random_forest":
         return _forest_pipeline(RandomForestClassifier(random_state=seed, n_jobs=-1, **rf_params))
     if algorithm == "lightgbm":
-        return _lgbm_pipeline(LGBMClassifier(random_state=seed, n_jobs=-1, verbose=-1, subsample_freq=1, **lgbm_params))
+        return _lgbm_pipeline(LGBMClassifier(random_state=seed, n_jobs=-1, verbose=-1, subsample_freq=1, **LGBM_STABLE, **lgbm_params))
     raise ValueError(f"Unknown algorithm {algorithm!r}; expected one of {ALGORITHMS}")
 
 
