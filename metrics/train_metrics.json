@@ -26,15 +26,26 @@
     "pr_auc": 0.7023450412397119,
     "roc_auc": 0.844740741390127,
     "precision": 0.6028329654157468,
-    "recall": 0.681147370609021, 
+    "recall": 0.681147370609021,
     "f1": 0.639601834683322,
     "brier": 0.12964696006035392,
     "prevalence": 0.26185163010939966,
     "threshold": 0.3400357263517287
   },
+  "baseline_test_classification": {
+    "pr_auc": 0.44814831355919993,
+    "roc_auc": 0.7293878800030321,
+    "precision": 0.38608094768015794,
+    "recall": 0.812928705050925,
+    "f1": 0.5235258684157686,
+    "brier": 0.16943944716606815,
+    "prevalence": 0.26185163010939966,
+    "threshold": 0.23168654173764908
+  },
+  "pr_auc_lift_over_baseline": 0.25419672768051194,
   "latency": {
-    "latency_ms_p50": 12.752156000004788,
-    "latency_ms_p95": 17.522788300004777
+    "latency_ms_p50": 11.024760500049524,
+    "latency_ms_p95": 14.087318700148899
   },
   "top_features": [
     {
@@ -58,7 +69,7 @@
       "mae_increase_s": 0.01084
     }
   ],
-  "mlflow_run_id": "6087d3d1f07a422082df498d0672d2ad",
-  "promoted": true,
-  "model_version": "1"
+  "mlflow_run_id": "4ab3aaca466a41cab3a95d33948154cf",
+  "promoted": false,
+  "model_version": "2"
 }

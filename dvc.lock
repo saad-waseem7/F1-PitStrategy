@@ -91,13 +91,13 @@ stages:
       size: 1288
     - path: src/features.py
       hash: md5
-      md5: fc2d3afdc1421fa3f89398bcf47b70cd
-      size: 1608
+      md5: 4a7403b1d263c74ad59492643708303f
+      size: 1920
     - path: src/models
       hash: md5
-      md5: b431a2d48856d85d422f1fbefda6f040.dir
-      size: 62685
-      nfiles: 10
+      md5: d0a36c86dcb74fd0c9e167e67869d0ca.dir
+      size: 25516
+      nfiles: 5
     params:
       params.yaml:
         train:
@@ -117,6 +117,7 @@ stages:
             subsample: 0.8
             colsample_bytree: 0.8
           min_lift_over_baseline: 0.05
+          min_pr_auc_lift_over_baseline: 0.0
           min_improvement_for_champion: 0.01
           latency_samples: 200
           permutation_sample: 5000
@@ -128,8 +129,8 @@ stages:
     outs:
     - path: metrics/train_metrics.json
       hash: md5
-      md5: 9a05d860861d62d221135d46aeb2ce98
-      size: 1610
+      md5: d5eeae1bcaead20c7d5cb6fb65dc40d0
+      size: 1985
     - path: models/champion
       hash: md5
       md5: 240dd5a0a7dcbe0cced4ad2e29b2ddaa.dir
