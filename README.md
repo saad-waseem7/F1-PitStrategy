@@ -89,13 +89,13 @@ The three lag features use only earlier laps of the same stint, never the curren
 2. **Cross-validation holds out whole races** (`GroupKFold` by session), so laps of one race never sit on both sides of a fold.
 3. **Pit threshold.** The probability cut-off that maximises F1 is chosen on out-of-fold predictions from the training years only, never on the test year.
 4. **Gates** (`params.yaml`, section `train`). The run fails, nothing is registered and the report is still written, if the regressor's test MAE is not at least 5% better than the baseline (`min_lift_over_baseline`), or if the classifier's PR-AUC is below the compound-and-tyre-age lookup baseline (`min_pr_auc_lift_over_baseline`). The second gate shows that lap-time features add value beyond tyre age.
-5. **Registry.** Every successful run registers a new version in the local MLflow registry (`mlflow.db`). The alias `champion` moves to it only if its test MAE is at least 1% better than the current champion's. The champion is exported to `models/champion`.
+5. **Registry.** Every successful run registers a new version in the local MLflow registry (`mlflow.db`). The alias `champion` moves to it if there is no champion, if its test MAE is at least 1% better, or if it ran on exactly the same train and test files as the champion and is not worse. The third rule means a code change on unchanged data replaces the old model instead of leaving a stale one in `models/champion`. A worse model on the same data, or a marginal gain on new data, does not take the alias. The champion is exported to `models/champion`.
 
 ```bash
 mlflow ui --backend-store-uri sqlite:///mlflow.db     # compare runs at http://127.0.0.1:5000
 ```
 
-Each MLflow run records the parameters, cross-validation and test metrics, permutation importance, single-row latency, the git commit and the MD5 of the train and test files. `metrics/train_metrics.json` holds the same summary: `cv_mae` and `baseline_test_mae` for the regressor, `test_classification` and `baseline_test_classification` for the classifier, `latency`, `top_features`, and `promoted`.
+Each MLflow run records the parameters, cross-validation and test metrics, permutation importance, single-row latency, the git commit and the MD5 of the train and test files. `metrics/train_metrics.json` holds the same summary: `cv_mae` and `baseline_test_mae` for the regressor, `test_classification` and `baseline_test_classification` for the classifier, `latency`, `top_features`, `promoted`, `model_version` (this run) and `champion_version` (what is exported).
 
 **Reproducibility.** Seeds live in `params.yaml`, folds are deterministic and LightGBM runs with its deterministic flags, so the same data, parameters and seed give the same model regardless of thread count. Package versions are recorded in the model's `requirements.txt`.
 

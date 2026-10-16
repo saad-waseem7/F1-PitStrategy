@@ -10,9 +10,10 @@ import numpy as np
 import pandas as pd
 import pytest
 from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
 
 from src.config import FEATURE_COLUMNS, load_params
-from src.models.train import run
+from src.models.train import maybe_promote, run
 
 
 def _write_processed(directory: Path, seed: int = 0) -> None:
@@ -82,14 +83,63 @@ def test_end_to_end_registers_champion_and_exports_loadable_model(workspace):
     assert str(version.version) == "1" and float(version.tags["test_mae"]) == pytest.approx(report["test_regression"]["mae"], rel=1e-4)
 
 
-def test_equal_model_is_registered_but_does_not_replace_champion(workspace):
+def test_rerun_on_same_data_promotes_so_export_matches_current_run(workspace):
     params, root = workspace
     first = _run(params, root)
     second = _run(params, root)
     assert first["promoted"] is True
-    assert second["model_version"] == "2" and second["promoted"] is False
+    assert second["model_version"] == "2" and second["promoted"] is True and second["champion_version"] == "2"
     client = MlflowClient(tracking_uri=params["train"]["mlflow"]["tracking_uri"])
-    assert str(client.get_model_version_by_alias(params["train"]["mlflow"]["model_name"], "champion").version) == "1"
+    assert str(client.get_model_version_by_alias(params["train"]["mlflow"]["model_name"], "champion").version) == "2"
+
+
+class _Run:
+    def __init__(self, tags: dict[str, str]) -> None:
+        self.data = type("D", (), {"tags": tags})()
+
+
+class _Version:
+    def __init__(self, tags: dict[str, str]) -> None:
+        self.tags = {k: v for k, v in tags.items() if k == "test_mae"}
+        self.run_id = tags.get("data_md5", "none")
+
+
+class _StubClient:
+    def __init__(self, champion: _Version | None) -> None:
+        self.champion = champion
+        self.aliased: str | None = None
+
+    def get_run(self, run_id: str) -> _Run:
+        md5 = run_id.split(":")
+        return _Run({"train_data_md5": md5[0], "test_data_md5": md5[1]} if len(md5) == 2 else {})
+
+    def get_model_version_by_alias(self, name: str, alias: str) -> _Version:
+        if self.champion is None:
+            raise MlflowException("no alias")
+        return self.champion
+
+    def set_registered_model_alias(self, name: str, alias: str, version: str) -> None:
+        self.aliased = version
+
+
+@pytest.mark.parametrize(
+    "champion_tags, mae, expected",
+    [
+        (None, 1.0, True),                                     # no champion
+        ({"test_mae": "1.0", "data_md5": "a:a"}, 0.98, True),    # clearly better, same data
+        ({"test_mae": "1.0", "data_md5": "a:a"}, 1.0, True),     # tie on same data
+        ({"test_mae": "1.0", "data_md5": "a:a"}, 1.01, False),   # worse on same data
+        ({"test_mae": "1.0", "data_md5": "a:a"}, 0.995, True),   # slightly better on same data
+        ({"test_mae": "1.0", "data_md5": "b:b"}, 0.995, False),  # marginal gain on different data
+        ({"test_mae": "1.0", "data_md5": "b:b"}, 0.98, True),    # clear gain on different data
+        ({"test_mae": "1.0"}, 1.0, False),                     # champion run without data tags
+        ({}, 5.0, True),                                       # champion without MAE tag
+    ],
+)
+def test_promotion_policy(champion_tags, mae, expected):
+    client = _StubClient(None if champion_tags is None else _Version(champion_tags))
+    assert maybe_promote(client, "m", "7", mae, 0.01, "a:a") is expected
+    assert client.aliased == ("7" if expected else None)
 
 
 def test_run_fails_loudly_when_model_does_not_beat_baseline(workspace):

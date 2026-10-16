@@ -169,17 +169,39 @@ def _registered_version(client: MlflowClient, info: Any, model_name: str) -> str
     return str(max(int(v.version) for v in client.search_model_versions(f"name='{model_name}'")))
 
 
-def maybe_promote(client: MlflowClient, model_name: str, version: str, test_mae: float, min_improvement: float) -> bool:
-    """Give the `champion` alias to `version` if there is no champion or it is clearly better."""
+def maybe_promote(
+    client: MlflowClient,
+    model_name: str,
+    version: str,
+    test_mae: float,
+    min_improvement: float,
+    data_md5: str,
+) -> bool:
+    """Give the `champion` alias to `version` when that is safe.
+
+    Promote if there is no champion, if the candidate is clearly better (min_improvement), or if it was trained
+    and tested on the same data as the champion and is not worse. The last case lets a code or parameter change
+    on unchanged data replace the old model, so the exported champion always comes from the current pipeline.
+    A candidate that is worse on identical data, or only marginally better on different data, is not promoted.
+    """
     try:
         champion = client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
     except MlflowException:
         champion = None
-    champion_mae = float(champion.tags["test_mae"]) if champion is not None and "test_mae" in champion.tags else None
-    if champion_mae is None or test_mae <= champion_mae * (1.0 - min_improvement):
+    if champion is None or "test_mae" not in champion.tags:
         client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version)
         return True
-    LOG.info("Not promoted: test MAE %.4f vs champion %.4f (needs %.0f%% better)", test_mae, champion_mae, min_improvement * 100)
+    champion_mae = float(champion.tags["test_mae"])
+    run_tags = client.get_run(champion.run_id).data.tags
+    same_data = f"{run_tags.get('train_data_md5')}:{run_tags.get('test_data_md5')}" == data_md5
+    test_mae = round(test_mae, 6)  # the champion's tag is stored with 6 decimals; compare like with like
+    if test_mae <= champion_mae * (1.0 - min_improvement) or (same_data and test_mae <= champion_mae):
+        client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version)
+        return True
+    LOG.info(
+        "Not promoted: test MAE %.4f vs champion %.4f (same data: %s, needs %.0f%% better otherwise)",
+        test_mae, champion_mae, same_data, min_improvement * 100,
+    )
     return False
 
 
@@ -225,13 +247,14 @@ def run(
     model_name = tp["mlflow"]["model_name"]
     client = MlflowClient()
 
+    train_md5, test_md5 = _md5(data_dir / "train.parquet"), _md5(data_dir / "test.parquet")
     with mlflow.start_run(run_name=f"train-{_git_commit()}") as parent:
         mlflow.log_params(_flatten(tp))
         mlflow.set_tags(
             {
                 "git_commit": _git_commit(),
-                "train_data_md5": _md5(data_dir / "train.parquet"),
-                "test_data_md5": _md5(data_dir / "test.parquet"),
+                "train_data_md5": train_md5,
+                "test_data_md5": test_md5,
                 "train_rows": str(len(train)),
                 "test_rows": str(len(test)),
             }
@@ -326,8 +349,11 @@ def run(
         version = _registered_version(client, info, model_name)
         client.set_model_version_tag(model_name, version, "test_mae", f"{test_reg['mae']:.6f}")
         client.set_model_version_tag(model_name, version, "algorithm", algorithm)
-        report["promoted"] = maybe_promote(client, model_name, version, test_reg["mae"], tp["min_improvement_for_champion"])
+        report["promoted"] = maybe_promote(
+            client, model_name, version, test_reg["mae"], tp["min_improvement_for_champion"], f"{train_md5}:{test_md5}"
+        )
         report["model_version"] = version
+        report["champion_version"] = str(client.get_model_version_by_alias(model_name, CHAMPION_ALIAS).version)
         mlflow.set_tag("promoted_to_champion", str(report["promoted"]))
 
     # 6. Export the current champion for DVC and the serving container
