@@ -19,5 +19,6 @@ mlflow.db
 .vscode/
 .idea/
 .DS_Store
-# Local-only handoff notes (shared by message, not by Git)
+
+# Local-only handoff notes
 HANDOFF.md
