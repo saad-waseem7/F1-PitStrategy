@@ -31,6 +31,8 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "track_temp_delta",
     "prev_lap_delta",
     "pace_decay_slope",
+    "prev_gap_to_best",
+    "recent_gap_to_best",
 )
 
 TARGET_REGRESSION: str = "pace_loss_s"

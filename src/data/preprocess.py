@@ -225,6 +225,21 @@ def _add_targets_and_features(df: pd.DataFrame, p: dict[str, Any]) -> pd.DataFra
     reference = df.groupby(ref_key)["fuel_corrected_s"].transform(lambda s: s.quantile(p["reference_quantile"]))
     df[TARGET_REGRESSION] = df["fuel_corrected_s"] - reference
 
+    # Serving-safe features: use laps strictly before the current one, within the same stint.
+    df["prev_lap_delta"] = df.groupby(stint_key)["fuel_corrected_s"].transform(lambda s: s.shift(1) - s.shift(2))
+    decay_w = int(p["decay_window"])
+    df["pace_decay_slope"] = df.groupby(stint_key)["fuel_corrected_s"].transform(
+        lambda s: pd.Series(trailing_slope(s.to_numpy(), decay_w), index=s.index).shift(1)
+    )
+    # Online pace loss: earlier laps against the best lap SEEN SO FAR in the stint (the label's reference uses
+    # the whole stint, which a live service cannot know). Only laps strictly before the current one are used.
+    gap_w = int(p["recent_gap_window"])
+
+    earlier = df.groupby(stint_key)["fuel_corrected_s"].shift(1)
+    best_so_far = earlier.groupby([df[k] for k in stint_key]).cummin()
+    recent_mean = earlier.groupby([df[k] for k in stint_key]).transform(lambda s: s.rolling(gap_w, min_periods=gap_w).mean())
+    df["prev_gap_to_best"] = earlier - best_so_far
+    df["recent_gap_to_best"] = recent_mean - best_so_far
     window = int(p["pit_rolling_window"])
     rolling_loss = df.groupby(stint_key)[TARGET_REGRESSION].transform(
         lambda s: s.rolling(window, min_periods=window).mean()
@@ -232,12 +247,6 @@ def _add_targets_and_features(df: pd.DataFrame, p: dict[str, Any]) -> pd.DataFra
     df[TARGET_CLASSIFICATION] = rolling_loss >= p["pit_loss_threshold_s"]
     df = df[rolling_loss.notna()].copy()  # label undefined for the first laps of a stint
 
-    # Serving-safe features: use laps strictly before the current one, within the same stint.
-    df["prev_lap_delta"] = df.groupby(stint_key)["fuel_corrected_s"].transform(lambda s: s.shift(1) - s.shift(2))
-    decay_w = int(p["decay_window"])
-    df["pace_decay_slope"] = df.groupby(stint_key)["fuel_corrected_s"].transform(
-        lambda s: pd.Series(trailing_slope(s.to_numpy(), decay_w), index=s.index).shift(1)
-    )
     df["race_progress"] = df["lap_number"] / df["race_laps"]
     return df
 

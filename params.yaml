@@ -24,6 +24,7 @@ preprocess:
   pit_rolling_window: 3
   # Features
   decay_window: 5
+  recent_gap_window: 2              # laps averaged in recent_gap_to_best
   temp_delta_lag_laps: 5
   # Split (chronological by year, prevents leakage across seasons)
   train_years: [2023, 2024]

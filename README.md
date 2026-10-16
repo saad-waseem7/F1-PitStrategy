@@ -64,7 +64,7 @@ A session for which OpenF1 returns no laps, stints and weather even after the re
 - `pace_loss_s`: fuel-corrected lap time minus the 10th percentile of fuel-corrected lap times in the same stint. Fuel-corrected time is `lap_duration + 0.05 * lap_number`. The 0.05 s per lap is an estimate: the data gives 0.049 +/- 0.001 s per lap for fuel burn plus track evolution together (`python -m src.data.diagnose_target`), and it matches the physical prior.
 - `pit_recommended`: true when the mean of `pace_loss_s` over the last 3 clean laps of the stint (including the current lap) is at least 1.0 s. This is a heuristic label for "tyres are costing real time", not a record of what teams decided. Rows without 3 laps of history in the stint are dropped.
 
-**Features** (13, the model input).
+**Features** (15, the model input).
 
 | Feature | Meaning |
 |---|---|
@@ -76,8 +76,10 @@ A session for which OpenF1 returns no laps, stints and weather even after the re
 | `track_temp_delta` | Track temperature now minus 5 laps ago (missing if that lap was removed) |
 | `prev_lap_delta` | Fuel-corrected time of the previous clean lap minus the one before it, same stint |
 | `pace_decay_slope` | Least-squares slope (s per lap) of fuel-corrected time over the previous 5 clean laps, same stint |
+| `prev_gap_to_best` | Fuel-corrected time of the previous clean lap minus the best earlier lap of the stint |
+| `recent_gap_to_best` | Mean fuel-corrected time of the previous 2 clean laps minus the same best lap |
 
-The three lag features use only earlier laps of the same stint, never the current lap, so they can be supplied at prediction time. "Previous clean laps" means the driver's earlier laps after the filters above, so safety car, pit and outlier laps are skipped rather than counted. They are missing for the first laps of a stint, and models must accept missing values.
+The `gap_to_best` features are an online version of the pace-loss target: the target measures against the stint's 10th percentile lap (known only once the stint is over), these measure against the best lap seen so far. They exist because a persistence baseline built from true previous pace loss scored far above a model without them. The five lag features use only earlier laps of the same stint, never the current lap, so they can be supplied at prediction time. "Previous clean laps" means the driver's earlier laps after the filters above, so safety car, pit and outlier laps are skipped rather than counted. They are missing for the first laps of a stint, and models must accept missing values.
 
 **Split.** By season, never random: train on 2023 and 2024, test on 2025. A random lap split would put laps from the same stint in both sets.
 
@@ -114,13 +116,14 @@ row = pd.DataFrame([{
     "tyre_age": 18, "compound": "MEDIUM", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
     "track_temperature": 41.0, "air_temperature": 28.0, "humidity": 45.0, "rainfall": 0.0, "wind_speed": 2.5,
     "track_temp_delta": 1.2, "prev_lap_delta": 0.15, "pace_decay_slope": 0.08,
+    "prev_gap_to_best": 0.2, "recent_gap_to_best": 0.35,
 }])
 model.predict(row)   # DataFrame with pace_loss_s, pit_probability, pit_recommended
 ```
 
-- All 13 feature columns are required (see "Features"); a missing column raises `ValueError`. Extra columns are ignored. Whole numbers may be sent as integers.
+- All 15 feature columns are required (see "Features"); a missing column raises `ValueError`. Extra columns are ignored. Whole numbers may be sent as integers.
 - `compound` must be SOFT, MEDIUM or HARD (any case). Anything else, including INTERMEDIATE and WET, raises `ValueError`: the model is trained on dry races only, and a serving layer should answer with a 422 and not a guess.
-- `track_temp_delta`, `prev_lap_delta` and `pace_decay_slope` may be missing (`None` or `NaN`). They are naturally missing early in a stint.
+- `track_temp_delta`, `prev_lap_delta`, `pace_decay_slope`, `prev_gap_to_best` and `recent_gap_to_best` may be missing (`None` or `NaN`). They are naturally missing early in a stint.
 - The model is a pickle. Load it only from the team's own DVC remote, with the package versions in `models/champion/requirements.txt` and the same Python minor version it was trained on (3.11), for example a `python:3.11` Docker base image.
 
 ## Repository layout

@@ -35,6 +35,7 @@ def _write_processed(directory: Path, seed: int = 0) -> None:
                          rainfall=0.0, wind_speed=2.0, track_temp_delta=float(rng.normal()),
                          prev_lap_delta=float(rng.normal(0, 0.3)) if rng.random() > 0.2 else np.nan,
                          pace_decay_slope=float(rng.normal(0.05, 0.05)) if rng.random() > 0.2 else np.nan,
+                         prev_gap_to_best=float(abs(rng.normal(0.3, 0.3))), recent_gap_to_best=float(abs(rng.normal(0.3, 0.3))),
                          pace_loss_s=loss, pit_recommended=bool(loss > 1.0))
                 )
     df = pd.DataFrame(rows)
@@ -221,6 +222,7 @@ def test_exported_model_accepts_integers_and_missing_lag_features(workspace):
         "tyre_age": 18, "compound": "medium", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
         "track_temperature": 41.0, "air_temperature": 28.0, "humidity": 45, "rainfall": 0, "wind_speed": 2.5,
         "track_temp_delta": None, "prev_lap_delta": None, "pace_decay_slope": None,
+        "prev_gap_to_best": None, "recent_gap_to_best": 0.4,
     }])
     out = model.predict(row)
     assert list(out.columns) == ["pace_loss_s", "pit_probability", "pit_recommended"]

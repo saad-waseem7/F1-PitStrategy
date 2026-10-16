@@ -33,6 +33,8 @@ def make_features(n: int = 600, seed: int = 0) -> tuple[pd.DataFrame, pd.Series,
             "track_temp_delta": rng.normal(0, 1, n),
             "prev_lap_delta": rng.normal(0, 0.3, n),
             "pace_decay_slope": rng.normal(0.05, 0.05, n),
+            "prev_gap_to_best": np.abs(rng.normal(0.3, 0.3, n)),
+            "recent_gap_to_best": np.abs(rng.normal(0.3, 0.3, n)),
         }
     )
     df.loc[rng.random(n) < 0.2, ["prev_lap_delta", "pace_decay_slope"]] = np.nan
