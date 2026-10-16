@@ -1,0 +1,30 @@
+ingest:
+  base_url: "https://api.openf1.org/v1"
+  years: [2023, 2024, 2025]
+  session_name: "Race"
+  request_delay_s: 2.5
+  retry_delay_s: 3        # fixed wait before retrying a failed or throttled request
+  max_retries: 20         # per request; ~1 minute of retrying before failing loudly
+  empty_retries: 2        # extra tries when a required endpoint returns zero rows
+  timeout_s: 60
+
+preprocess:
+  # Scope: dry races only. Wet/mixed races break the pace baseline and are out of scope.
+  dry_only: true
+  wet_session_fraction: 0.05        # session dropped if >=5% of laps are wet tyres or rain
+  # Target construction
+  fuel_correction_s_per_lap: 0.05   # assumed lap time gain per lap from fuel burn (~1.7 kg x ~0.03 s/kg)
+  reference_scope: "stint"          # "stint" (pace vs the stint's own best) or "driver_race"
+  reference_quantile: 0.10          # reference pace = this quantile of corrected laps in scope
+  outlier_ratio: 1.07               # drop laps slower than 107% of driver median
+  min_laps_per_driver: 15
+  min_stint_laps: 8                 # stints with fewer clean laps are dropped
+  # Pit recommendation label
+  pit_loss_threshold_s: 1.0         # rolling pace loss above this => pit flag
+  pit_rolling_window: 3
+  # Features
+  decay_window: 5
+  temp_delta_lag_laps: 5
+  # Split (chronological by year, prevents leakage across seasons)
+  train_years: [2023, 2024]
+  test_years: [2025]

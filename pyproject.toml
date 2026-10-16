@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Real errors only: undefined names, unused imports and variables, syntax errors.
+select = ["F", "E9", "PLE"]

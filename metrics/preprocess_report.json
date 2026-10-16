@@ -1,0 +1,15 @@
+{
+  "laps_before_filtering": 77075,
+  "after_dropna": 77021,
+  "after_drop_wet": 67707,
+  "wet_sessions_dropped": 9,
+  "after_drop_lap1": 66581,
+  "after_drop_pit_laps": 62534,
+  "after_drop_safety_car": 59227,
+  "after_drop_slow_outliers": 58766,
+  "final_rows": 51833,
+  "train_rows": 33460,
+  "test_rows": 18373,
+  "sessions": 61,
+  "pit_flag_rate_train": 0.2586
+}
