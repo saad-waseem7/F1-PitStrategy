@@ -45,9 +45,10 @@ train:
     min_child_samples: 40
     subsample: 0.8
     colsample_bytree: 0.8
-  min_lift_over_baseline: 0.05    # fail the run if test MAE is not 5% better than the naive baseline
-  min_pr_auc_lift_over_baseline: 0.0   # fail if test PR-AUC is not above the compound+tyre-age lookup by this much
-  min_improvement_for_champion: 0.01   # on new data a model must beat the champion's test MAE by 1%; on identical data, not worse is enough
+  min_lift_over_baseline: 0.05    # fail the run if CV MAE is not 5% better than the naive baseline
+  min_pr_auc_lift_over_baseline: 0.0   # fail if CV PR-AUC is not above the compound+tyre-age lookup by this much
+  min_pr_auc_lift_over_persistence: null  # optional gate (CV PR-AUC vs previous-laps baseline); null = report only
+  min_improvement_for_champion: 0.01   # on new data a model must beat the champion's CV MAE by 1%; on identical data, not worse is enough
   latency_samples: 200
   permutation_sample: 5000
   mlflow:

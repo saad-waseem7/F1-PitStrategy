@@ -13,6 +13,7 @@ from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 
 from src.config import FEATURE_COLUMNS, load_params
+from src.models.evaluate import persistence_proba
 from src.models.train import maybe_promote, run
 
 
@@ -100,7 +101,7 @@ class _Run:
 
 class _Version:
     def __init__(self, tags: dict[str, str]) -> None:
-        self.tags = {k: v for k, v in tags.items() if k == "test_mae"}
+        self.tags = {k: v for k, v in tags.items() if k == "cv_mae"}
         self.run_id = tags.get("data_md5", "none")
 
 
@@ -126,13 +127,13 @@ class _StubClient:
     "champion_tags, mae, expected",
     [
         (None, 1.0, True),                                     # no champion
-        ({"test_mae": "1.0", "data_md5": "a:a"}, 0.98, True),    # clearly better, same data
-        ({"test_mae": "1.0", "data_md5": "a:a"}, 1.0, True),     # tie on same data
-        ({"test_mae": "1.0", "data_md5": "a:a"}, 1.01, False),   # worse on same data
-        ({"test_mae": "1.0", "data_md5": "a:a"}, 0.995, True),   # slightly better on same data
-        ({"test_mae": "1.0", "data_md5": "b:b"}, 0.995, False),  # marginal gain on different data
-        ({"test_mae": "1.0", "data_md5": "b:b"}, 0.98, True),    # clear gain on different data
-        ({"test_mae": "1.0"}, 1.0, False),                     # champion run without data tags
+        ({"cv_mae": "1.0", "data_md5": "a:a"}, 0.98, True),    # clearly better, same data
+        ({"cv_mae": "1.0", "data_md5": "a:a"}, 1.0, True),     # tie on same data
+        ({"cv_mae": "1.0", "data_md5": "a:a"}, 1.01, False),   # worse on same data
+        ({"cv_mae": "1.0", "data_md5": "a:a"}, 0.995, True),   # slightly better on same data
+        ({"cv_mae": "1.0", "data_md5": "b:b"}, 0.995, False),  # marginal gain on different data
+        ({"cv_mae": "1.0", "data_md5": "b:b"}, 0.98, True),    # clear gain on different data
+        ({"cv_mae": "1.0"}, 1.0, False),                     # champion run without data tags
         ({}, 5.0, True),                                       # champion without MAE tag
     ],
 )
@@ -140,6 +141,39 @@ def test_promotion_policy(champion_tags, mae, expected):
     client = _StubClient(None if champion_tags is None else _Version(champion_tags))
     assert maybe_promote(client, "m", "7", mae, 0.01, "a:a") is expected
     assert client.aliased == ("7" if expected else None)
+
+
+def test_report_includes_persistence_baseline_and_cv_lifts(workspace):
+    params, root = workspace
+    report = _run(params, root)
+    assert 0.0 <= report["persistence_test_classification"]["pr_auc"] <= 1.0
+    assert np.isfinite(report["pr_auc_lift_over_persistence"]) and np.isfinite(report["cv_pr_auc_lift_over_persistence"])
+    assert report["cv_lift_over_baseline"] >= params["train"]["min_lift_over_baseline"]
+
+
+def test_persistence_gate_fails_when_required_lift_is_impossible(workspace):
+    params, root = workspace
+    params["train"]["min_pr_auc_lift_over_persistence"] = 1.0
+    with pytest.raises(RuntimeError, match="persistence"):
+        _run(params, root)
+
+
+def test_persistence_proba_uses_only_earlier_laps_of_the_same_stint():
+    df = pd.DataFrame(
+        {
+            "session_key": [1, 1, 1, 1, 1],
+            "driver_number": [7, 7, 7, 7, 9],
+            "stint_number": [1, 1, 1, 2, 1],
+            "lap_number": [5, 3, 4, 6, 3],
+            "pace_loss_s": [9.0, 1.0, 3.0, 8.0, 5.0],
+        },
+        index=[10, 11, 12, 13, 14],
+    )
+    out = pd.Series(persistence_proba(df, window=2), index=df.index)
+    squash = lambda x: 1.0 - np.exp(-x)  # noqa: E731
+    assert out[11] == 0.0 and out[13] == 0.0 and out[14] == 0.0      # no history in their own stint
+    assert out[12] == pytest.approx(squash(1.0))                       # lap 4 sees lap 3 only
+    assert out[10] == pytest.approx(squash(2.0))                       # lap 5 sees laps 3, 4: mean 2.0; own 9.0 unused
 
 
 def test_run_fails_loudly_when_model_does_not_beat_baseline(workspace):

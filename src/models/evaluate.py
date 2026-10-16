@@ -54,6 +54,22 @@ def classification_metrics(y_true: np.ndarray, proba: np.ndarray, threshold: flo
     }
 
 
+def persistence_proba(df: pd.DataFrame, window: int) -> np.ndarray:
+    """Score a lap by the mean pace loss of the previous `window` retained laps of the same stint.
+
+    This is the "tyres were already slow, so they still are" baseline. The label is a trailing mean of pace
+    loss, so a model must beat this to show it adds more than the label's own recent history. The baseline is
+    generous: pace loss uses the stint's best laps as reference, which a live service would not know yet.
+    Laps without history score 0. The score is squashed into [0, 1) because only its ranking matters.
+    """
+    order = df.sort_values(["session_key", "driver_number", "stint_number", "lap_number"])
+    keys = [order["session_key"], order["driver_number"], order["stint_number"]]
+    previous = order.groupby(keys)["pace_loss_s"].shift(1)
+    rolled = previous.groupby(keys).rolling(window, min_periods=1).mean().reset_index(level=[0, 1, 2], drop=True)
+    score = rolled.reindex(df.index).fillna(0.0).clip(lower=0.0).to_numpy()
+    return 1.0 - np.exp(-score)
+
+
 def single_row_latency_ms(predict_fn: Any, rows: pd.DataFrame, n: int) -> dict[str, float]:
     """Wall-clock latency of predicting ONE row at a time, which is what the API does."""
     n = min(n, len(rows))

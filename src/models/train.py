@@ -36,6 +36,7 @@ import pandas as pd
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from sklearn.inspection import permutation_importance
+from sklearn.metrics import average_precision_score
 from sklearn.model_selection import GroupKFold
 
 from src.config import (
@@ -61,6 +62,7 @@ from src.models.evaluate import (
     best_f1_threshold,
     classification_metrics,
     regression_metrics,
+    persistence_proba,
     single_row_latency_ms,
 )
 
@@ -173,34 +175,35 @@ def maybe_promote(
     client: MlflowClient,
     model_name: str,
     version: str,
-    test_mae: float,
+    cv_mae: float,
     min_improvement: float,
     data_md5: str,
 ) -> bool:
     """Give the `champion` alias to `version` when that is safe.
 
-    Promote if there is no champion, if the candidate is clearly better (min_improvement), or if it was trained
-    and tested on the same data as the champion and is not worse. The last case lets a code or parameter change
-    on unchanged data replace the old model, so the exported champion always comes from the current pipeline.
-    A candidate that is worse on identical data, or only marginally better on different data, is not promoted.
+    The decision uses cross-validated MAE on the training years, never the test set, so the test set stays a
+    clean report. Promote if there is no champion (or it has no recorded CV MAE), if the candidate is clearly
+    better (min_improvement), or if it ran on exactly the same train and test files as the champion and is not
+    worse. The last case lets a code or parameter change on unchanged data replace the old model, so the
+    exported champion always comes from the current pipeline.
     """
     try:
         champion = client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
     except MlflowException:
         champion = None
-    if champion is None or "test_mae" not in champion.tags:
+    if champion is None or "cv_mae" not in champion.tags:
         client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version)
         return True
-    champion_mae = float(champion.tags["test_mae"])
+    champion_mae = float(champion.tags["cv_mae"])
     run_tags = client.get_run(champion.run_id).data.tags
     same_data = f"{run_tags.get('train_data_md5')}:{run_tags.get('test_data_md5')}" == data_md5
-    test_mae = round(test_mae, 6)  # the champion's tag is stored with 6 decimals; compare like with like
-    if test_mae <= champion_mae * (1.0 - min_improvement) or (same_data and test_mae <= champion_mae):
+    cv_mae = round(cv_mae, 6)  # the champion's tag is stored with 6 decimals; compare like with like
+    if cv_mae <= champion_mae * (1.0 - min_improvement) or (same_data and cv_mae <= champion_mae):
         client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version)
         return True
     LOG.info(
-        "Not promoted: test MAE %.4f vs champion %.4f (same data: %s, needs %.0f%% better otherwise)",
-        test_mae, champion_mae, same_data, min_improvement * 100,
+        "Not promoted: CV MAE %.4f vs champion %.4f (same data: %s, needs %.0f%% better otherwise)",
+        cv_mae, champion_mae, same_data, min_improvement * 100,
     )
     return False
 
@@ -290,6 +293,18 @@ def run(
             c_test.to_numpy(), GroupRateBaseline().fit(X_train, c_train).predict_proba(X_test)[:, 1], base_threshold
         )
         pr_auc_lift = test_cls["pr_auc"] - base_cls["pr_auc"]
+        cv_pr_auc_lift = cv_cls["pr_auc"] - average_precision_score(c_train, base_oof)
+        cv_lift = (choice["cv_mae"]["baseline"] - choice["cv_mae"][algorithm]) / choice["cv_mae"]["baseline"]
+
+        # Persistence baseline: score a lap by the pace loss of the stint's previous laps. It has no fitted
+        # parameters, so the same rule is scored on the training years (for the gate) and on the test year.
+        window = int(params["preprocess"]["pit_rolling_window"]) - 1
+        pers_train, pers_test = persistence_proba(train, window), persistence_proba(test, window)
+        pers_threshold = best_f1_threshold(c_train.to_numpy(), pers_train)
+        pers_cls = classification_metrics(c_test.to_numpy(), pers_test, pers_threshold)
+        pers_cv_pr_auc = float(average_precision_score(c_train, pers_train))
+        cv_pr_auc_lift_pers = cv_cls["pr_auc"] - pers_cv_pr_auc
+        pr_auc_lift_pers = test_cls["pr_auc"] - pers_cls["pr_auc"]
 
         bundle = PitStrategyModel(regressor, classifier, threshold)
         latency = single_row_latency_ms(bundle.predict_frame, X_test, int(tp["latency_samples"]))
@@ -306,8 +321,20 @@ def run(
         mlflow.log_metrics(_finite({f"test_{k}": v for k, v in test_reg.items()}))
         mlflow.log_metrics(_finite({f"test_cls_{k}": v for k, v in test_cls.items()}))
         mlflow.log_metrics(_finite({f"baseline_test_cls_{k}": v for k, v in base_cls.items()}))
+        mlflow.log_metrics(_finite({f"persistence_test_cls_{k}": v for k, v in pers_cls.items()}))
         mlflow.log_metrics(
-            _finite({"baseline_test_mae": baseline_reg["mae"], "lift_over_baseline": lift, "pr_auc_lift_over_baseline": pr_auc_lift, **latency})
+            _finite(
+                {
+                    "baseline_test_mae": baseline_reg["mae"],
+                    "lift_over_baseline": lift,
+                    "cv_lift_over_baseline": cv_lift,
+                    "pr_auc_lift_over_baseline": pr_auc_lift,
+                    "cv_pr_auc_lift_over_baseline": cv_pr_auc_lift,
+                    "pr_auc_lift_over_persistence": pr_auc_lift_pers,
+                    "cv_pr_auc_lift_over_persistence": cv_pr_auc_lift_pers,
+                    **latency,
+                }
+            )
         )
         mlflow.log_dict({"permutation_importance": top_features}, "permutation_importance.json")
         mlflow.set_tag("selected_algorithm", algorithm)
@@ -318,27 +345,38 @@ def run(
             "test_regression": test_reg,
             "baseline_test_mae": baseline_reg["mae"],
             "lift_over_baseline": lift,
+            "cv_lift_over_baseline": cv_lift,
             "cv_classification": cv_cls,
             "test_classification": test_cls,
             "baseline_test_classification": base_cls,
             "pr_auc_lift_over_baseline": pr_auc_lift,
+            "cv_pr_auc_lift_over_baseline": cv_pr_auc_lift,
+            "persistence_test_classification": pers_cls,
+            "pr_auc_lift_over_persistence": pr_auc_lift_pers,
+            "cv_pr_auc_lift_over_persistence": cv_pr_auc_lift_pers,
             "latency": latency,
             "top_features": top_features[:5],
             "mlflow_run_id": parent.info.run_id,
             "promoted": False,
         }
 
-        # 4. Gates: refuse to register a model that does not clearly beat the naive baselines
+        # 4. Gates on cross-validation over the training years only, so the test year is never used for a decision
         failures = []
-        if lift < tp["min_lift_over_baseline"]:
+        if cv_lift < tp["min_lift_over_baseline"]:
             failures.append(
-                f"test MAE {test_reg['mae']:.4f} is only {lift:.1%} better than the naive baseline "
-                f"({baseline_reg['mae']:.4f}); required {tp['min_lift_over_baseline']:.0%}"
+                f"CV MAE {choice['cv_mae'][algorithm]:.4f} is only {cv_lift:.1%} better than the naive baseline "
+                f"({choice['cv_mae']['baseline']:.4f}); required {tp['min_lift_over_baseline']:.0%}"
             )
-        if np.isfinite(pr_auc_lift) and pr_auc_lift < tp["min_pr_auc_lift_over_baseline"]:
+        if np.isfinite(cv_pr_auc_lift) and cv_pr_auc_lift < tp["min_pr_auc_lift_over_baseline"]:
             failures.append(
-                f"test PR-AUC {test_cls['pr_auc']:.3f} is only {pr_auc_lift:+.3f} above the compound-and-tyre-age "
-                f"baseline ({base_cls['pr_auc']:.3f}); required {tp['min_pr_auc_lift_over_baseline']:+.3f}"
+                f"CV PR-AUC {cv_cls['pr_auc']:.3f} is only {cv_pr_auc_lift:+.3f} above the compound-and-tyre-age "
+                f"baseline; required {tp['min_pr_auc_lift_over_baseline']:+.3f}"
+            )
+        min_vs_persistence = tp.get("min_pr_auc_lift_over_persistence")
+        if min_vs_persistence is not None and np.isfinite(cv_pr_auc_lift_pers) and cv_pr_auc_lift_pers < min_vs_persistence:
+            failures.append(
+                f"CV PR-AUC {cv_cls['pr_auc']:.3f} is only {cv_pr_auc_lift_pers:+.3f} above the persistence baseline "
+                f"({pers_cv_pr_auc:.3f}); required {min_vs_persistence:+.3f}"
             )
         if failures:
             _write_report(report, metrics_dir)
@@ -348,9 +386,10 @@ def run(
         info = _log_bundle(bundle, X_train, model_name)
         version = _registered_version(client, info, model_name)
         client.set_model_version_tag(model_name, version, "test_mae", f"{test_reg['mae']:.6f}")
+        client.set_model_version_tag(model_name, version, "cv_mae", f"{choice['cv_mae'][algorithm]:.6f}")
         client.set_model_version_tag(model_name, version, "algorithm", algorithm)
         report["promoted"] = maybe_promote(
-            client, model_name, version, test_reg["mae"], tp["min_improvement_for_champion"], f"{train_md5}:{test_md5}"
+            client, model_name, version, choice["cv_mae"][algorithm], tp["min_improvement_for_champion"], f"{train_md5}:{test_md5}"
         )
         report["model_version"] = version
         report["champion_version"] = str(client.get_model_version_by_alias(model_name, CHAMPION_ALIAS).version)
