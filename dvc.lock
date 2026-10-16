@@ -5,8 +5,8 @@ stages:
     deps:
     - path: src/config.py
       hash: md5
-      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
-      size: 1288
+      md5: f0630629d93a7dd824748bf4baa926ce
+      size: 1338
     - path: src/data/ingest.py
       hash: md5
       md5: ab5ac1dc20a3368a2ec5299096cd2e75
@@ -41,12 +41,12 @@ stages:
       nfiles: 350
     - path: src/config.py
       hash: md5
-      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
-      size: 1288
+      md5: f0630629d93a7dd824748bf4baa926ce
+      size: 1338
     - path: src/data/preprocess.py
       hash: md5
-      md5: 6784d71364dd75a96632e7f356ec84c3
-      size: 15189
+      md5: 915d45b0abd6776a09781a17fc39d9b4
+      size: 15821
     params:
       params.yaml:
         preprocess:
@@ -61,6 +61,7 @@ stages:
           pit_loss_threshold_s: 1.0
           pit_rolling_window: 3
           decay_window: 5
+          recent_gap_window: 2
           temp_delta_lag_laps: 5
           train_years:
           - 2023
@@ -70,8 +71,8 @@ stages:
     outs:
     - path: data/processed
       hash: md5
-      md5: 4963df3eea5140cbf9b6d9937450267c.dir
-      size: 1791311
+      md5: 5f1863a3067fd48d5e42cdcb83c833f5.dir
+      size: 2510684
       nfiles: 3
     - path: metrics/preprocess_report.json
       hash: md5
@@ -82,21 +83,21 @@ stages:
     deps:
     - path: data/processed
       hash: md5
-      md5: 4963df3eea5140cbf9b6d9937450267c.dir
-      size: 1791311
+      md5: 5f1863a3067fd48d5e42cdcb83c833f5.dir
+      size: 2510684
       nfiles: 3
     - path: src/config.py
       hash: md5
-      md5: 869f2ed6a9f8fe63cbd139d82dbd8de6
-      size: 1288
+      md5: f0630629d93a7dd824748bf4baa926ce
+      size: 1338
     - path: src/features.py
       hash: md5
       md5: 4a7403b1d263c74ad59492643708303f
       size: 1920
     - path: src/models
       hash: md5
-      md5: 7c0104cbad5cb70774e5ecea883287fa.dir
-      size: 26617
+      md5: c6179008269f50d49add55c697c7a490.dir
+      size: 30103
       nfiles: 5
     params:
       params.yaml:
@@ -118,6 +119,7 @@ stages:
             colsample_bytree: 0.8
           min_lift_over_baseline: 0.05
           min_pr_auc_lift_over_baseline: 0.0
+          min_pr_auc_lift_over_persistence:
           min_improvement_for_champion: 0.01
           latency_samples: 200
           permutation_sample: 5000
@@ -129,10 +131,10 @@ stages:
     outs:
     - path: metrics/train_metrics.json
       hash: md5
-      md5: f539bad89d843b0ee6ce6f538950d86b
-      size: 2008
+      md5: c29788d5410ca0a2a5424da8dd9436d1
+      size: 2566
     - path: models/champion
       hash: md5
-      md5: b44f8d95acf48fd5c66d3de79f15256c.dir
-      size: 1753604
+      md5: 0af60ea2e46533e48af57a1b7d8a0947.dir
+      size: 1758662
       nfiles: 20
