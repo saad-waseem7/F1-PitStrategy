@@ -8,8 +8,8 @@ This repository is built in phases. This README describes what is implemented on
 |---|---|---|
 | 1 | Saad | Data ingestion, preprocessing, DVC pipeline |
 | 2 | Saad | Model training, MLflow tracking and registry |
-| 3 | Partner | FastAPI service, Docker, Docker Compose |
-| 4 | Partner | GitHub Actions CI/CD, Evidently drift checks, Airflow DAGs |
+| 3 | Bilal | FastAPI service, Docker, Docker Compose |
+| 4 | Bilal | GitHub Actions CI/CD, Evidently drift checks, Airflow DAGs |
 
 ## Quick start
 
