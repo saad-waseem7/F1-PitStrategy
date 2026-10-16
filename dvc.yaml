@@ -22,3 +22,17 @@ stages:
     metrics:
       - metrics/preprocess_report.json:
           cache: false
+  train:
+    cmd: python -m src.models.train
+    deps:
+      - src/models
+      - src/features.py
+      - src/config.py
+      - data/processed
+    params:
+      - train
+    outs:
+      - models/champion
+    metrics:
+      - metrics/train_metrics.json:
+          cache: false

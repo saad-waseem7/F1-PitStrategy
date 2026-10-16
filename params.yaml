@@ -24,7 +24,36 @@ preprocess:
   pit_rolling_window: 3
   # Features
   decay_window: 5
+  recent_gap_window: 2              # laps averaged in recent_gap_to_best
   temp_delta_lag_laps: 5
   # Split (chronological by year, prevents leakage across seasons)
   train_years: [2023, 2024]
   test_years: [2025]
+
+train:
+  seed: 42
+  cv_folds: 5                     # GroupKFold by race session, so no race leaks across folds
+  lgbm_trials: 15                 # random search trials for the LightGBM regressor
+  lgbm_objective: "huber"         # robust to traffic spikes in noisy lap times
+  rf:
+    n_estimators: 300
+    min_samples_leaf: 5
+    max_features: 0.6
+  lgbm_classifier:
+    n_estimators: 400
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 40
+    subsample: 0.8
+    colsample_bytree: 0.8
+  min_lift_over_baseline: 0.05    # fail the run if CV MAE is not 5% better than the naive baseline
+  min_pr_auc_lift_over_baseline: 0.0   # fail if CV PR-AUC is not above the compound+tyre-age lookup by this much
+  min_pr_auc_lift_over_persistence: null  # optional gate (CV PR-AUC vs previous-laps baseline); null = report only
+  min_improvement_for_champion: 0.01   # on new data a model must beat the champion's CV MAE by 1%; on identical data, not worse is enough
+  latency_samples: 200
+  permutation_sample: 5000
+  mlflow:
+    tracking_uri: "sqlite:///mlflow.db"
+    artifact_root: "mlartifacts"      # where MLflow stores model files (gitignored)
+    experiment: "f1-pit-strategy"
+    model_name: "f1-pit-strategy"

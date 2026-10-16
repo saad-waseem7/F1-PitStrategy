@@ -17,6 +17,6 @@ lightgbm>=4.3,<5
 # Drift monitoring (Phase 4)
 evidently>=0.4.30
 
-# Testing
+# Testing and linting
 pytest>=8
 ruff>=0.6
