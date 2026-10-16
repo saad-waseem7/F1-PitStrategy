@@ -95,8 +95,8 @@ stages:
       size: 1920
     - path: src/models
       hash: md5
-      md5: d0a36c86dcb74fd0c9e167e67869d0ca.dir
-      size: 25516
+      md5: 7c0104cbad5cb70774e5ecea883287fa.dir
+      size: 26617
       nfiles: 5
     params:
       params.yaml:
@@ -129,10 +129,10 @@ stages:
     outs:
     - path: metrics/train_metrics.json
       hash: md5
-      md5: d5eeae1bcaead20c7d5cb6fb65dc40d0
-      size: 1985
+      md5: f539bad89d843b0ee6ce6f538950d86b
+      size: 2008
     - path: models/champion
       hash: md5
-      md5: 240dd5a0a7dcbe0cced4ad2e29b2ddaa.dir
-      size: 1747464
-      nfiles: 18
+      md5: b44f8d95acf48fd5c66d3de79f15256c.dir
+      size: 1753604
+      nfiles: 20

@@ -44,8 +44,8 @@
   },
   "pr_auc_lift_over_baseline": 0.25419672768051194,
   "latency": {
-    "latency_ms_p50": 11.024760500049524,
-    "latency_ms_p95": 14.087318700148899
+    "latency_ms_p50": 8.83411550000801,
+    "latency_ms_p95": 9.428241999989948
   },
   "top_features": [
     {
@@ -69,7 +69,8 @@
       "mae_increase_s": 0.01084
     }
   ],
-  "mlflow_run_id": "4ab3aaca466a41cab3a95d33948154cf",
-  "promoted": false,
-  "model_version": "2"
+  "mlflow_run_id": "cbd4dfa93c284f2a809b8afcf8a21ba0",
+  "promoted": true,
+  "model_version": "3",
+  "champion_version": "3"
 }
