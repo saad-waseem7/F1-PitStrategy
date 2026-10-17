@@ -164,6 +164,29 @@ Behaviour worth knowing:
 - There is no authentication, rate limiting or request body size limit. Put the service behind a gateway or reverse proxy before exposing it beyond a trusted network.
 - The Docker image installs the exact package versions recorded in `models/champion/requirements.txt` on `python:3.11-slim`, so the model runs on the Python and library versions that trained it. Rebuild the image whenever `models/champion` changes. Serving the model from a repository checkout at a different commit than the one that exported it is unsupported, because the model's pickle references the `src` modules.
 
+## Automation and monitoring (Phase 4)
+
+**CI** (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`:
+`ruff` and `pytest` (job `test`), then a Docker smoke test (job `docker`) and the Airflow DAG tests (job `airflow-dag`). The smoke test trains a throwaway synthetic champion with `python -m tests.make_ci_champion`, builds the image, starts it, waits for `/ready`, checks a prediction and checks that a wet compound is refused. It proves the Dockerfile, API and model contract fit together; it says nothing about the real model, which CI cannot reach while the DVC remote is a folder on one laptop. `publish-image.yml` publishes the image with the real model to GHCR, is manual only, and needs a shared DVC remote and repository secrets first (see its header). It has not been exercised.
+
+**Drift** (`python -m src.monitoring.drift`) compares the served requests in `logs/predictions.jsonl` with `data/processed/train.parquet` using Evidently and writes `reports/drift/drift_report.html` and `drift_summary.json`.
+
+- Only input drift is measured. Labels (pace loss, pit flag) exist only after a stint ends, so live model performance cannot be monitored; shifted inputs are the early warning.
+- Fewer than 200 logged requests gives `status: insufficient_data` and no drift claim.
+- A column drifts when its normalised Wasserstein distance is 0.2 or more (numeric) or its Jensen-Shannon distance is 0.1 or more (compound). Evidently's default of 0.1 flagged columns that had not moved at a few hundred rows. Overall drift is declared when 20% of columns drift (three of fourteen), because the weather columns move together. With identical distributions no overall drift appeared in 15 of 15 trials at 200 rows. These are starting values; tune `--num-threshold`, `--cat-threshold` and `--drift-share` once there is real traffic.
+- Constant columns (`rainfall` is 0 throughout training) are skipped and listed in the summary. `--fail-on-drift` makes the exit status 2 on drift.
+
+**Retraining DAG** (`airflow/dags/f1_retrain.py`, weekly). `choose_path` goes straight to `ingest` when the run parameter `force_retrain` is set, otherwise `check_drift` runs and `decide_after_drift` either skips or continues with `ingest`, `preprocess`, `train` and `summarize`. Tasks call the same `python -m ...` commands as `dvc repro`, inside the project's own virtualenv (`F1_PYTHON`, `F1_PROJECT_DIR`), so Airflow's dependency pins never meet the project's. A missing drift summary fails the run instead of guessing; `ingest` retries twice, `train` never retries, and a quality-gate rejection fails the DAG and keeps the old champion. The DAG does not commit anything: after a retrain, review the result, run `dvc status`, then commit `dvc.lock` and `metrics/` and `dvc push`. The API container must be rebuilt and restarted to serve a new champion.
+
+```bash
+echo "AIRFLOW_UID=$(id -u)" > airflow/.env
+docker compose up -d                                         # API first: it creates the log volume
+docker compose -f airflow/docker-compose.yml up --build     # Airflow at http://localhost:8080
+python -m pytest -q tests && python -m pytest -q airflow/tests   # the second needs apache-airflow installed
+```
+
+The Airflow image and compose file have not been built or run; the DAG itself was parsed and run through its drift branch with Airflow 2.10.5.
+
 ## Repository layout
 
 ```
@@ -180,6 +203,9 @@ src/models/bundle.py     the deployable model (regressor + classifier + threshol
 src/models/train.py      comparison, gates, MLflow logging, registry, export
 src/api/                 FastAPI service: schemas, model service, history features, prediction log
 Dockerfile  docker-compose.yml  requirements-api.txt   serving image
+src/monitoring/drift.py  Evidently drift report over the prediction log
+airflow/                 retrain DAG, Airflow image and compose, DAG tests
+.github/workflows/       CI and the manual image publish
 tests/                   pytest suite on synthetic OpenF1-shaped data
 metrics/                 small JSON reports, tracked by Git
 models/champion          the exported model, tracked by DVC

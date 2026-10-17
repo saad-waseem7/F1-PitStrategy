@@ -1,0 +1,30 @@
+# Single-container Airflow (SQLite, SequentialExecutor): enough for a weekly retrain DAG, not a production setup.
+# Run from the repository root:  docker compose -f airflow/docker-compose.yml up --build
+services:
+  airflow:
+    build:
+      context: ..
+      dockerfile: airflow/Dockerfile
+    command: standalone
+    # Run as your own user so the DAG can write data/, models/ and metrics/ in the checkout.
+    # Put AIRFLOW_UID=$(id -u) in airflow/.env (Linux). Airflow's default uid 50000 cannot write there.
+    user: "${AIRFLOW_UID:-50000}:0"
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      F1_PROJECT_DIR: /opt/f1
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      # The project checkout, read-write: the DAG writes data/, models/, metrics/ and reports/ here.
+      - ..:/opt/f1
+      # Served-prediction log written by the API container (created by `docker compose up` in the repository root; its name is <project directory>_api-logs).
+      - f1-pitstrategy_api-logs:/opt/f1/logs:ro
+      - airflow-home:/opt/airflow
+    restart: unless-stopped
+
+volumes:
+  airflow-home:
+  f1-pitstrategy_api-logs:
+    external: true
