@@ -22,3 +22,6 @@ mlflow.db
 
 # Local-only handoff notes
 HANDOFF.md
+
+# Served-prediction logs
+logs/

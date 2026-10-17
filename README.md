@@ -126,6 +126,44 @@ model.predict(row)   # DataFrame with pace_loss_s, pit_probability, pit_recommen
 - `track_temp_delta`, `prev_lap_delta`, `pace_decay_slope`, `prev_gap_to_best` and `recent_gap_to_best` may be missing (`None` or `NaN`). They are naturally missing early in a stint.
 - The model is a pickle. Load it only from the team's own DVC remote, with the package versions in `models/champion/requirements.txt` and the same Python minor version it was trained on (3.11), for example a `python:3.11` Docker base image.
 
+## Serving the model (Phase 3)
+
+A FastAPI service in `src/api/` wraps `models/champion`. It needs the model on disk (`dvc pull`, or the exported folder copied into `models/champion`).
+
+```bash
+uvicorn src.api.app:app --port 8000          # local, from the repository root
+docker compose up --build                    # container, same port; build after models/champion exists
+```
+
+Interactive docs are at `http://localhost:8000/docs`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Process is up. Always 200 |
+| `GET /ready` | 200 once the model loaded and passed a smoke prediction, else 503 |
+| `GET /model-info` | Threshold, feature list, champion version and test metrics from `metrics/train_metrics.json` |
+| `POST /predict` | One lap, all 15 features (the four lag features and `track_temp_delta` may be null) |
+| `POST /predict/batch` | `{"laps": [...]}`, same fields, up to 500 laps |
+| `POST /predict/from-history` | Current-lap context plus the stint's earlier clean laps (`lap_number`, `lap_duration`); the service computes the four lag features with the preprocessing formulas |
+
+```bash
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "tyre_age": 18, "compound": "MEDIUM", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
+  "track_temperature": 41, "air_temperature": 28, "humidity": 45, "wind_speed": 2.5,
+  "prev_gap_to_best": 0.4, "recent_gap_to_best": 0.5}'
+# {"pace_loss_s": ..., "pit_probability": ..., "pit_recommended": ..., "warnings": [], "threshold": ..., "request_id": "..."}
+```
+
+Behaviour worth knowing:
+
+- Invalid input is a 422 that names the field and the reason, never the rejected value. Unknown field names, NaN or infinity, out of range numbers, wet compounds (`INTERMEDIATE`, `WET`) and unordered or future history laps are all rejected. A model that is not loaded gives 503.
+- `rainfall > 0` still predicts but returns a warning, because the model was trained on dry races. Missing lag features also return a warning, because accuracy drops without them.
+- `/predict/from-history` expects clean laps only (no pit-in or pit-out laps, safety car laps or laps slower than 107% of the driver's median) and fails if they are not in strictly increasing lap order. It reads `fuel_correction_s_per_lap`, `decay_window` and `recent_gap_window` from `params.yaml`, so the image must ship the same `params.yaml` the model was trained with. `tests/test_api_history.py` checks that this code and `preprocess.py` agree row by row.
+- Every prediction is appended to a JSON-lines file (`PREDICTION_LOG`, default `logs/predictions.jsonl`, a named volume in Compose) with timestamp, request id, inputs, outputs and latency. An empty `PREDICTION_LOG` disables it. A logging failure never fails a request. Phase 4 drift monitoring reads this file.
+- Configuration is by environment variable: `MODEL_DIR`, `METRICS_PATH`, `PARAMS_PATH`, `PREDICTION_LOG`, `MAX_BATCH`.
+- There is no authentication, rate limiting or request body size limit. Put the service behind a gateway or reverse proxy before exposing it beyond a trusted network.
+- The Docker image installs the exact package versions recorded in `models/champion/requirements.txt` on `python:3.11-slim`, so the model runs on the Python and library versions that trained it. Rebuild the image whenever `models/champion` changes. Serving the model from a repository checkout at a different commit than the one that exported it is unsupported, because the model's pickle references the `src` modules.
+
 ## Repository layout
 
 ```
@@ -140,6 +178,8 @@ src/models/estimators.py baselines, Random Forest, LightGBM, search space
 src/models/evaluate.py   metrics, F1 threshold, single-row latency
 src/models/bundle.py     the deployable model (regressor + classifier + threshold)
 src/models/train.py      comparison, gates, MLflow logging, registry, export
+src/api/                 FastAPI service: schemas, model service, history features, prediction log
+Dockerfile  docker-compose.yml  requirements-api.txt   serving image
 tests/                   pytest suite on synthetic OpenF1-shaped data
 metrics/                 small JSON reports, tracked by Git
 models/champion          the exported model, tracked by DVC
