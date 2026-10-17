@@ -1,15 +1,21 @@
+# syntax=docker/dockerfile:1
 # Serving image for the champion model. Build from the repository root AFTER `dvc pull`
 # (or after copying models/champion in), because the model is not in Git.
 #   docker build -t f1-pit-strategy .
 FROM python:3.11-slim AS builder
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+# Generous timeouts and retries: a slow or flaky connection otherwise shows up as "No matching
+# distribution found ... (from versions: none)", which is a network failure, not a missing package.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /build
 # Dependency layers first so code changes do not reinstall packages.
 COPY models/champion/requirements.txt model-requirements.txt
 COPY requirements-api.txt .
-RUN pip install -r model-requirements.txt -r requirements-api.txt
+# The cache mount keeps downloaded wheels between builds, so a retry after a dropped connection resumes
+# instead of downloading everything again. It is not part of the final image.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r model-requirements.txt -r requirements-api.txt
 
 FROM python:3.11-slim
 # LightGBM needs the OpenMP runtime, which the slim image lacks.
