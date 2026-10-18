@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    image: f1-pit-strategy:latest
+    ports:
+      - "8000:8000"
+    environment:
+      PREDICTION_LOG: /app/logs/predictions.jsonl
+    volumes:
+      # Served predictions, one JSON object per line. Phase 4 drift monitoring reads this.
+      - api-logs:/app/logs
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  api-logs:

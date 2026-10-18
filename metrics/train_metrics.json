@@ -1,0 +1,90 @@
+{
+  "selected_algorithm": "lightgbm",
+  "cv_mae": {
+    "baseline": 0.49202103407053194,
+    "random_forest": 0.38101012066461615,
+    "lightgbm": 0.36785144311315726
+  },
+  "test_regression": {
+    "mae": 0.37510724270627854,
+    "rmse": 0.5918378633110186,
+    "r2": 0.4865762216660867
+  },
+  "baseline_test_mae": 0.5307859549338703,
+  "lift_over_baseline": 0.2932984770612242,
+  "cv_lift_over_baseline": 0.25236642817911475,
+  "cv_classification": {
+    "pr_auc": 0.8580256791366481,
+    "roc_auc": 0.9318902332804582,
+    "precision": 0.7961299239806496,
+    "recall": 0.798798104703571,
+    "f1": 0.7974617825209115,
+    "brier": 0.0786564768202777,
+    "prevalence": 0.2586072922893007,
+    "threshold": 0.4118303335235056
+  },
+  "test_classification": {
+    "pr_auc": 0.8835034660414437,
+    "roc_auc": 0.9463898234858541,
+    "precision": 0.795816733067729,
+    "recall": 0.8303886925795053,
+    "f1": 0.8127352253077001,
+    "brier": 0.07465279461559628,
+    "prevalence": 0.26185163010939966,
+    "threshold": 0.4118303335235056
+  },
+  "baseline_test_classification": {
+    "pr_auc": 0.44814831355919993,
+    "roc_auc": 0.7293878800030321,
+    "precision": 0.38608094768015794,
+    "recall": 0.812928705050925,
+    "f1": 0.5235258684157686,
+    "brier": 0.16943944716606815,
+    "prevalence": 0.26185163010939966,
+    "threshold": 0.23168654173764908
+  },
+  "pr_auc_lift_over_baseline": 0.43535515248224377,
+  "cv_pr_auc_lift_over_baseline": 0.4502767050518286,
+  "persistence_test_classification": {
+    "pr_auc": 0.9507600106772862,
+    "roc_auc": 0.9657514910083995,
+    "precision": 0.9045204900718209,
+    "recall": 0.8900436499688215,
+    "f1": 0.8972236773179675,
+    "brier": 0.10474321792652228,
+    "prevalence": 0.26185163010939966,
+    "threshold": 0.6210685647892473
+  },
+  "pr_auc_lift_over_persistence": -0.06725654463584252,
+  "cv_pr_auc_lift_over_persistence": -0.08326258411829934,
+  "latency": {
+    "latency_ms_p50": 11.362183000073856,
+    "latency_ms_p95": 13.303149950024817
+  },
+  "top_features": [
+    {
+      "feature": "prev_gap_to_best",
+      "mae_increase_s": 0.15735
+    },
+    {
+      "feature": "recent_gap_to_best",
+      "mae_increase_s": 0.05734
+    },
+    {
+      "feature": "tyre_age",
+      "mae_increase_s": 0.022
+    },
+    {
+      "feature": "track_temperature",
+      "mae_increase_s": 0.00699
+    },
+    {
+      "feature": "pace_decay_slope",
+      "mae_increase_s": 0.00397
+    }
+  ],
+  "mlflow_run_id": "2195f54205b342709da44101b283e623",
+  "promoted": true,
+  "model_version": "5",
+  "champion_version": "5"
+}

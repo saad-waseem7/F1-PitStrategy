@@ -56,7 +56,7 @@ def test_filters_remove_unusable_laps(built):
 def test_no_missing_values_in_model_inputs(built):
     df, _ = built
     # NaN is allowed only in lagged pace features (first laps of a stint), LightGBM handles it.
-    strict = [c for c in FEATURE_COLUMNS if c not in ("prev_lap_delta", "pace_decay_slope", "track_temp_delta")]
+    strict = [c for c in FEATURE_COLUMNS if c not in ("prev_lap_delta", "pace_decay_slope", "track_temp_delta", "prev_gap_to_best", "recent_gap_to_best")]
     assert not df[strict].isna().any().any()
     assert not df[TARGET_REGRESSION].isna().any()
 
@@ -90,8 +90,8 @@ def test_lagged_features_do_not_leak_current_lap(raw_frames, params):
     mutated["laps"].loc[mask, "lap_duration"] += 2.0
     changed, _ = build_dataset(params=params, **mutated)
     key = lambda d: d[(d["session_key"] == 1001) & (d["driver_number"] == 1) & (d["lap_number"] == 30)].iloc[0]
-    for col in ("prev_lap_delta", "pace_decay_slope"):
-        assert key(base)[col] == pytest.approx(key(changed)[col])
+    for col in ("prev_lap_delta", "pace_decay_slope", "prev_gap_to_best", "recent_gap_to_best"):
+        assert key(base)[col] == pytest.approx(key(changed)[col], nan_ok=True)
 
 
 def test_report_counts_are_monotonic(built):
@@ -166,3 +166,17 @@ def test_stint_reference_pace_loss_is_near_zero_at_best_laps(built):
     df, _ = built
     per_stint_min = df.groupby(["session_key", "driver_number", "stint_number"])[TARGET_REGRESSION].min()
     assert per_stint_min.abs().median() < 0.5
+
+def test_gap_to_best_is_online_and_matches_hand_computation(built):
+    """Gaps are measured against the best earlier lap of the stint. pace_loss_s differs from fuel-corrected
+    time by a per-stint constant, so differences of it equal differences of corrected times."""
+    df, _ = built
+    assert (df["prev_gap_to_best"].dropna() >= -1e-9).all()
+    stint = df[(df["session_key"] == 1001) & (df["driver_number"] == 1)].sort_values("lap_number")
+    stint = stint[stint["stint_number"] == stint["stint_number"].iloc[-1]]
+    t = stint["pace_loss_s"].to_numpy()
+    row = len(t) - 1
+    assert row >= 3
+    best = t[:row].min()
+    assert stint["prev_gap_to_best"].iloc[row] == pytest.approx(t[row - 1] - best)
+    assert stint["recent_gap_to_best"].iloc[row] == pytest.approx(t[row - 2 : row].mean() - best)

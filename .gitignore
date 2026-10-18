@@ -19,3 +19,9 @@ mlflow.db
 .vscode/
 .idea/
 .DS_Store
+
+# Local-only handoff notes
+HANDOFF.md
+
+# Served-prediction logs
+logs/

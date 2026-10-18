@@ -10,6 +10,7 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 RAW_DIR: Path = PROJECT_ROOT / "data" / "raw"
 PROCESSED_DIR: Path = PROJECT_ROOT / "data" / "processed"
 METRICS_DIR: Path = PROJECT_ROOT / "metrics"
+MODELS_DIR: Path = PROJECT_ROOT / "models"
 PARAMS_PATH: Path = PROJECT_ROOT / "params.yaml"
 
 ENDPOINTS: tuple[str, ...] = ("sessions", "laps", "stints", "weather", "race_control")
@@ -30,6 +31,8 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "track_temp_delta",
     "prev_lap_delta",
     "pace_decay_slope",
+    "prev_gap_to_best",
+    "recent_gap_to_best",
 )
 
 TARGET_REGRESSION: str = "pace_loss_s"
