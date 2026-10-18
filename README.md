@@ -1,19 +1,18 @@
 # F1-PitStrategy
 
-Predicts tyre-wear pace loss and whether a pit stop should be considered, using Formula 1 lap, stint and weather data from OpenF1. This project is being built in phases for the CS4085 MLOps course.
+Predicts tyre-wear pace loss and whether a pit stop should be considered, using Formula 1 lap, stint, and weather data from OpenF1.
 
-## What is included on this branch
+## Included in this branch
 
-- OpenF1 data ingestion with retries and resumable downloads.
-- Preprocessing for dry races, pace-loss and pit recommendation targets, lag features, and a season-based train/test split.
-- Regression and classification models, grouped cross-validation, MLflow tracking, model registration, and export of the champion model.
-- DVC pipeline and data/model versioning.
-
-The API and monitoring work is being developed on separate branches and pull requests.
+- OpenF1 ingestion and preprocessing for dry races.
+- Model training, evaluation, and MLflow tracking.
+- A FastAPI service for single-lap, batch, and history-based predictions.
+- Docker and Docker Compose setup for running the API.
+- Request validation and a log of served predictions.
 
 ## Setup
 
-Requirements: Python 3.11, Git, and DVC.
+Requirements: Python 3.11, Git, and Docker for container use.
 
 ```bash
 git clone git@github.com:saad-waseem7/F1-PitStrategy.git
@@ -21,40 +20,42 @@ cd F1-PitStrategy
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
 python -m pytest -q
 ruff check src tests
-dvc pull
-dvc repro
 ```
 
-Run commands from the repository root. The code imports modules through `src.*`.
+The API needs the exported model in `models/champion`. Get it with `dvc pull` if you have access to the configured DVC remote.
 
-## Pipeline
+## Run the API
 
-```text
-OpenF1 -> data/raw/ -> preprocessing -> data/processed/
-                                  -> training -> models/champion/
+From the repository root:
+
+```bash
+uvicorn src.api.app:app --port 8000
 ```
 
-Run individual stages with `python -m src.data.ingest`, `python -m src.data.preprocess`, and `python -m src.models.train`. The same stages can be run through `dvc repro`.
+Or run it in Docker after the model is available:
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:8000/docs` for the interactive API documentation.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Checks that the service is running |
+| `GET /ready` | Checks that the model loaded successfully |
+| `GET /model-info` | Shows model details and reported metrics |
+| `POST /predict` | Predicts for one lap |
+| `POST /predict/batch` | Predicts for a batch of laps |
+| `POST /predict/from-history` | Calculates lag features from earlier clean laps, then predicts |
+
+Invalid input returns a validation error. Wet tyre compounds are rejected because the model was trained on dry races. Rainfall and missing history features can produce warnings. Served predictions are logged to `logs/predictions.jsonl` for monitoring.
 
 ## Data and model notes
 
-- The model is trained on dry races. Wet and mixed-weather sessions are excluded.
-- The pit recommendation is a heuristic based on recent pace loss, not a record of real team decisions.
-- Training uses 2023 and 2024, with 2025 held out for testing.
-- `metrics/` contains small reports tracked by Git. Data and the exported model are managed by DVC.
-- MLflow runs and its local registry are stored on each machine and are not shared automatically.
-
-## Sharing data
-
-The configured DVC remote is a local folder: `/home/saad/Documents/dvc-storage`. Teammates need access to a shared copy of that folder, or the project needs a shared remote, before `dvc pull` will work for them.
-
-## Tests
-
-The test suite uses synthetic OpenF1-shaped data and does not need to download race data. Run `python -m pytest -q` from the repository root.
-
-## Known limits
-
-The model only covers dry races. Pit labels are heuristic, and lap times are affected by traffic, track position, and other factors that are not fully represented. The fuel correction is an estimate, so pace-loss values also carry uncertainty.
+- The pit recommendation is a heuristic, not a record of actual team decisions.
+- The model is stored with DVC and must be kept with the code and package versions used to export it.
+- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy or a shared remote.
+- The API has no authentication or rate limiting. Do not expose it directly to an untrusted network.

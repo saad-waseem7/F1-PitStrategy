@@ -1,0 +1,6 @@
+# Serving image only. The model's own pins (mlflow, scikit-learn, lightgbm, pandas, numpy) come from
+# models/champion/requirements.txt so the runtime always matches what trained the model.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+pydantic>=2.7,<3
+pyyaml>=6
