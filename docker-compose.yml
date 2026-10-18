@@ -1,7 +1,7 @@
 # One file, two tiers.
 #   docker compose up --build -d                       API only (needs models/champion)
 #   docker compose --profile airflow up --build -d     API + Airflow (retraining and drift checks)
-# Linux: put AIRFLOW_UID=$(id -u) in a root .env file, or Airflow cannot write data/, models/ and metrics/ in this checkout.
+# Linux: copy .env.example to .env and set AIRFLOW_UID=$(id -u), or Airflow cannot write data/, models/ and metrics/ in this checkout.
 services:
   api:
     build: .
