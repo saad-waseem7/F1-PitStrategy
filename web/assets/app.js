@@ -212,19 +212,19 @@ function probabilityMeter(probability, threshold) {
   return h(
     "div",
     null,
-    h("div", { class: "meter", role: "img", "aria-label": `Pit probability ${pct(probability)}, threshold ${pct(threshold)}` }, fill, mark),
-    h("div", { class: "meter-legend" }, h("span", null, "0%"), h("span", null, `threshold ${pct(threshold, 1)}`), h("span", null, "100%")),
+    h("div", { class: "meter", role: "img", "aria-label": `Pit Probability ${pct(probability)}, threshold ${pct(threshold)}` }, fill, mark),
+    h("div", { class: "meter-legend" }, h("span", null, "0%"), h("span", null, `Threshold ${pct(threshold, 1)}`), h("span", null, "100%")),
   );
 }
 
 // ---------------------------------------------------------------- page: predict
 const PREDICT_FIELDS = [
-  { id: "tyre_age", label: "Tyre age (laps)", min: 0, max: 100, step: 1, hint: "Including laps on the set before the stint" },
-  { id: "stint_number", label: "Stint number", min: 1, max: 10, step: 1 },
-  { id: "lap_number", label: "Lap number", min: 1, max: 120, step: 1 },
-  { id: "race_laps", label: "Race length (laps)", min: 1, max: 120, step: 1, hint: "Used to compute race progress" },
-  { id: "track_temperature", label: "Track temp (°C)", min: -10, max: 90, step: "any" },
-  { id: "air_temperature", label: "Air temp (°C)", min: -30, max: 60, step: "any" },
+  { id: "tyre_age", label: "Tyre Age (laps)", min: 0, max: 100, step: 1, hint: "Including laps on the set before the stint" },
+  { id: "stint_number", label: "Stint Number", min: 1, max: 10, step: 1 },
+  { id: "lap_number", label: "Lap Number", min: 1, max: 120, step: 1 },
+  { id: "race_laps", label: "Race Length (laps)", min: 1, max: 120, step: 1, hint: "Used to compute race progress" },
+  { id: "track_temperature", label: "Track Temp (°C)", min: -10, max: 90, step: "any" },
+  { id: "air_temperature", label: "Air Temp (°C)", min: -30, max: 60, step: "any" },
   { id: "humidity", label: "Humidity (%)", min: 0, max: 100, step: "any" },
   { id: "wind_speed", label: "Wind (m/s)", min: 0, max: 60, step: "any" },
 ];
@@ -282,7 +282,7 @@ function renderPredict(view) {
     id: "laps", name: "laps", spellcheck: "false", rows: 6, placeholder: "12, 92.31\n13, 92.40\n14, 92.52",
   });
   const submit = h("button", { type: "submit", class: "primary" }, "Predict");
-  const example = h("button", { type: "button" }, "Load example");
+  const example = h("button", { type: "button" }, "Load Example");
 
   example.addEventListener("click", () => {
     for (const [id, value] of Object.entries(EXAMPLE.values)) inputs[id].value = value;
@@ -364,7 +364,7 @@ function renderPrediction(r, usedHistory) {
   for (const warning of r.warnings || []) parts.push(h("div", { class: "notice" }, warning));
   if (r.computed_features) {
     const rows = Object.entries(r.computed_features).map(([k, v]) => [k, v === null ? "not enough laps" : fmt(v, 3)]);
-    parts.push(h("details", null, h("summary", null, "Computed lag features"), dataTable(["Feature", "Value"], rows)));
+    parts.push(h("details", null, h("summary", null, "Computed Lag Features"), dataTable(["Feature", "Value"], rows)));
   }
   parts.push(h("p", { class: "mono" }, `request ${r.request_id}`));
   return h("div", null, parts);
@@ -373,7 +373,7 @@ function renderPrediction(r, usedHistory) {
 // ---------------------------------------------------------------- page: replay
 async function renderReplay(view) {
   view.append(
-    h("h1", null, "Stint replay"),
+    h("h1", null, "Stint Replay"),
     h("p", { class: "lede" }, "Pick a race, a driver and a stint. The model scores every lap with the features known at that lap, shown against what actually happened."),
   );
   const body = h("div", null, h("p", { class: "empty" }, "Loading"));
@@ -494,18 +494,18 @@ function renderStint(stint) {
   return h("div", null,
     h("div", { class: "card" },
       h("div", { class: "stats" },
-        stat("Laps", laps.length), stat("Mean abs. error", `${fmt(mae)} s`), stat("Flag agreement", pct(agree)),
-        stat("Model first box", firstWhere("pit_recommended")), stat("Label first box", firstWhere("actual_pit_recommended"))),
-      h("h2", null, "Pace loss"), paceChart,
+        stat("Laps", laps.length), stat("Mean Abs. Error", `${fmt(mae)} s`), stat("Flag Agreement", pct(agree)),
+        stat("Model First Box", firstWhere("pit_recommended")), stat("Label First Box", firstWhere("actual_pit_recommended"))),
+      h("h2", null, "Pace Loss"), paceChart,
       h("div", { class: "legend" },
         h("span", null, h("i", { class: "key actual" }), "Actual"), h("span", null, h("i", { class: "key pred" }), "Predicted")),
-      h("h2", null, "Pit probability"), probChart,
+      h("h2", null, "Pit Probability"), probChart,
       h("div", { class: "legend" },
-        h("span", null, h("i", { class: "key pred" }), "Model probability"),
+        h("span", null, h("i", { class: "key pred" }), "Model Probability"),
         h("span", null, h("i", { class: "key threshold" }), `Threshold ${pct(stint.threshold, 1)}`),
-        h("span", null, h("i", { class: "key band" }), "Laps labelled box")),
-      h("details", null, h("summary", null, "Lap table"),
-        dataTable(["Lap", "Tyre age", "Actual s", "Predicted s", "P(pit)", "Model", "Label"], rows))));
+        h("span", null, h("i", { class: "key band" }), "Laps Labelled Box")),
+      h("details", null, h("summary", null, "Lap Table"),
+        dataTable(["Lap", "Tyre Age", "Actual s", "Predicted s", "P(pit)", "Model", "Label"], rows))));
 }
 
 // ---------------------------------------------------------------- page: model and monitoring
@@ -521,12 +521,12 @@ function metricsTable(title, metrics) {
 }
 
 async function renderModel(view) {
-  view.append(h("h1", null, "Model & monitoring"), h("p", { class: "lede" }, "What is being served, how it scored on held-out races, and whether the traffic it sees still looks like the data it learned from."));
+  view.append(h("h1", null, "Model & Monitoring"), h("p", { class: "lede" }, "What is being served, how it scored on held-out races, and whether the traffic it sees still looks like the data it learned from."));
   const body = h("div", { class: "grid" });
   view.append(body);
   const [info, drift] = await Promise.allSettled([api("/model-info"), api("/monitoring/summary")]);
 
-  const modelCard = h("section", { class: "card" }, h("h2", null, "Champion model"));
+  const modelCard = h("section", { class: "card" }, h("h2", null, "Champion Model"));
   if (info.status === "rejected") {
     modelCard.append(errorNotice(info.reason));
   } else {
@@ -537,13 +537,13 @@ async function renderModel(view) {
         stat("Threshold", fmt(m.threshold, 3)), stat("Features", (m.features || []).length)),
       m.ready ? null : h("div", { class: "notice error" }, "The model is not loaded."),
       m.created_utc ? h("p", { class: "hint" }, `Exported ${m.created_utc}`) : null,
-      metricsTable("Held-out regression", (m.test_metrics || {}).test_regression),
-      metricsTable("Held-out pit flag", (m.test_metrics || {}).test_classification),
-      h("details", null, h("summary", null, "Input features"), h("div", { class: "chips" }, (m.features || []).map((f) => h("span", { class: "chip" }, f)))),
+      metricsTable("Held-out Regression", (m.test_metrics || {}).test_regression),
+      metricsTable("Held-out Pit Flag", (m.test_metrics || {}).test_classification),
+      h("details", null, h("summary", null, "Input Features"), h("div", { class: "chips" }, (m.features || []).map((f) => h("span", { class: "chip" }, f)))),
     ]);
   }
 
-  const driftCard = h("section", { class: "card" }, h("h2", null, "Input drift"));
+  const driftCard = h("section", { class: "card" }, h("h2", null, "Input Drift"));
   if (drift.status === "rejected") {
     driftCard.append(errorNotice(drift.reason));
   } else {
@@ -569,8 +569,8 @@ function renderDrift(card, d) {
   }
   append(card, [
     h("div", { class: "stats" },
-      stat("Requests checked", d.n_current), stat("Reference rows", d.n_reference),
-      stat("Columns drifted", pct(d.share_drifted)), stat("Alert at", pct(d.drift_share_threshold))),
+      stat("Requests Checked", d.n_current), stat("Reference Rows", d.n_reference),
+      stat("Columns Drifted", pct(d.share_drifted)), stat("Alert At", pct(d.drift_share_threshold))),
     d.generated_at ? h("p", { class: "hint" }, `Generated ${d.generated_at}`) : null,
   ]);
   if ((d.drifted_columns || []).length) {
@@ -601,10 +601,10 @@ async function checkStatus() {
   const pill = document.getElementById("status");
   try {
     await api("/ready");
-    pill.textContent = "Model ready";
+    pill.textContent = "Model Ready";
     pill.className = "pill ok";
   } catch (error) {
-    pill.textContent = error.status === 503 ? "Model not loaded" : "API unreachable";
+    pill.textContent = error.status === 503 ? "Model Not Loaded" : "API Unreachable";
     pill.className = "pill bad";
   }
 }
