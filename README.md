@@ -2,17 +2,18 @@
 
 Predicts tyre-wear pace loss and whether a pit stop should be considered, using Formula 1 lap, stint, and weather data from OpenF1.
 
-## Included in this branch
+## Included in this phase
 
 - OpenF1 ingestion and preprocessing for dry races.
-- Model training, evaluation, and MLflow tracking.
-- A FastAPI service for single-lap, batch, and history-based predictions.
-- Docker and Docker Compose setup for running the API.
-- Request validation and a log of served predictions.
+- Pace-loss and heuristic pit recommendation targets, with features based on earlier laps.
+- Regression and classification baselines, Random Forest, and LightGBM.
+- Grouped cross-validation by race session and a season-based test split.
+- MLflow tracking, model registration, and export of the champion model.
+- DVC stages for data and model files.
 
 ## Setup
 
-Requirements: Python 3.11, Git, and Docker for container use.
+Requirements: Python 3.11, Git, and DVC.
 
 ```bash
 git clone git@github.com:saad-waseem7/F1-PitStrategy.git
@@ -20,42 +21,25 @@ cd F1-PitStrategy
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
 python -m pytest -q
 ruff check src tests
+dvc pull
+dvc repro
 ```
 
-The API needs the exported model in `models/champion`. Get it with `dvc pull` if you have access to the configured DVC remote.
+Run commands from the repository root. Use `python -m src.models.train` to run training directly, or `dvc repro` to run the pipeline.
 
-## Run the API
+## Evaluation
 
-From the repository root:
+Training uses 2023 and 2024, with 2025 held out for testing. The regressor predicts pace loss in seconds, and the classifier predicts the probability of the heuristic pit label. Check `metrics/train_metrics.json` for the latest results.
 
-```bash
-uvicorn src.api.app:app --port 8000
-```
-
-Or run it in Docker after the model is available:
-
-```bash
-docker compose up --build
-```
-
-Open `http://localhost:8000/docs` for the interactive API documentation.
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /health` | Checks that the service is running |
-| `GET /ready` | Checks that the model loaded successfully |
-| `GET /model-info` | Shows model details and reported metrics |
-| `POST /predict` | Predicts for one lap |
-| `POST /predict/batch` | Predicts for a batch of laps |
-| `POST /predict/from-history` | Calculates lag features from earlier clean laps, then predicts |
-
-Invalid input returns a validation error. Wet tyre compounds are rejected because the model was trained on dry races. Rainfall and missing history features can produce warnings. Served predictions are logged to `logs/predictions.jsonl` for monitoring.
+The classifier does not beat the recent-lap persistence baseline in the current reported test results. This is recorded in the metrics and should be considered when judging the model.
 
 ## Data and model notes
 
-- The pit recommendation is a heuristic, not a record of actual team decisions.
-- The model is stored with DVC and must be kept with the code and package versions used to export it.
-- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy or a shared remote.
-- The API has no authentication or rate limiting. Do not expose it directly to an untrusted network.
+- Wet and mixed-weather races are out of scope.
+- Pit labels are heuristic, not ground truth about team decisions.
+- Data and the exported champion model are managed by DVC.
+- MLflow runs and the local model registry are not shared automatically.
+- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy or a shared remote before `dvc pull` will work.
