@@ -22,6 +22,8 @@ mlflow.db
 
 # Local-only handoff notes
 HANDOFF.md
+champion.zip
+processed.zip
 
 # Served-prediction logs
 logs/
