@@ -24,3 +24,6 @@ mlflow.db
 HANDOFF.md
 champion.zip
 processed.zip
+
+# Served-prediction logs
+logs/
