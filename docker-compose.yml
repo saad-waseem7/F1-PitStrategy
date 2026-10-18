@@ -1,3 +1,7 @@
+# One file, two tiers.
+#   docker compose up --build -d                       API only (needs models/champion)
+#   docker compose --profile airflow up --build -d     API + Airflow (retraining and drift checks)
+# Linux: put AIRFLOW_UID=$(id -u) in a root .env file, or Airflow cannot write data/, models/ and metrics/ in this checkout.
 services:
   api:
     build: .
@@ -7,11 +11,38 @@ services:
     environment:
       PREDICTION_LOG: /app/logs/predictions.jsonl
     volumes:
-      # Served predictions, one JSON object per line. Phase 4 drift monitoring reads this.
+      # Served predictions, one JSON object per line. Drift monitoring reads this.
       - api-logs:/app/logs
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
 
+  # Single-container Airflow (SQLite, SequentialExecutor): enough for a weekly retrain DAG, not a production setup.
+  airflow:
+    profiles: ["airflow"]
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    image: f1-pit-airflow:latest
+    command: standalone
+    user: "${AIRFLOW_UID:-50000}:0"
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      F1_PROJECT_DIR: /opt/f1
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      # The project checkout, read-write: the DAG writes data/, models/, metrics/ and reports/ here.
+      - .:/opt/f1
+      # The API's prediction log, read-only: the drift check reads it.
+      - api-logs:/opt/f1/logs:ro
+      - airflow-home:/opt/airflow
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   api-logs:
+  airflow-home:

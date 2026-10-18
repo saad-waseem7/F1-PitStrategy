@@ -179,13 +179,15 @@ Behaviour worth knowing:
 **Retraining DAG** (`airflow/dags/f1_retrain.py`, weekly). `choose_path` goes straight to `ingest` when the run parameter `force_retrain` is set, otherwise `check_drift` runs and `decide_after_drift` either skips or continues with `ingest`, `preprocess`, `train` and `summarize`. Tasks call the same `python -m ...` commands as `dvc repro`, inside the project's own virtualenv (`F1_PYTHON`, `F1_PROJECT_DIR`), so Airflow's dependency pins never meet the project's. A missing drift summary fails the run instead of guessing; `ingest` retries twice, `train` never retries, and a quality-gate rejection fails the DAG and keeps the old champion. The DAG does not commit anything: after a retrain, review the result, run `dvc status`, then commit `dvc.lock` and `metrics/` and `dvc push`. The API container must be rebuilt and restarted to serve a new champion.
 
 ```bash
-echo "AIRFLOW_UID=$(id -u)" > airflow/.env
-docker compose up -d                                         # API first: it creates the log volume
-docker compose -f airflow/docker-compose.yml up --build     # Airflow at http://localhost:8080
+echo "AIRFLOW_UID=$(id -u)" > .env                               # once, Linux
+docker compose up --build -d                                  # API only, http://localhost:8000
+docker compose --profile airflow up --build -d                # API + Airflow, http://localhost:8080
 python -m pytest -q tests && python -m pytest -q airflow/tests   # the second needs apache-airflow installed
 ```
 
-The Airflow image and compose file have not been built or run; the DAG itself was parsed and run through its drift branch with Airflow 2.10.5.
+`docker compose down` stops everything; the prediction log and Airflow state live in named volumes and survive it (`down -v` deletes them). Add `COMPOSE_PROFILES=airflow` to `.env` to make a plain `docker compose up` start both.
+
+The Airflow image was built and its login page served on the author's machine; a full DAG run inside the container has not been done; the DAG itself was parsed and run through its drift branch with Airflow 2.10.5.
 
 ## Repository layout
 
@@ -204,7 +206,7 @@ src/models/train.py      comparison, gates, MLflow logging, registry, export
 src/api/                 FastAPI service: schemas, model service, history features, prediction log
 Dockerfile  docker-compose.yml  requirements-api.txt   serving image
 src/monitoring/drift.py  Evidently drift report over the prediction log
-airflow/                 retrain DAG, Airflow image and compose, DAG tests
+airflow/                 retrain DAG, Airflow image, DAG tests
 .github/workflows/       CI and the manual image publish
 tests/                   pytest suite on synthetic OpenF1-shaped data
 metrics/                 small JSON reports, tracked by Git
