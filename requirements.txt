@@ -1,26 +1,13 @@
-# Phase 1-2 core (CPU only, no torch/tensorflow). Airflow is NOT here on purpose:
-# it pins conflicting versions and runs in its own Docker image in Phase 4.
-pandas>=2.2,<4
-numpy>=1.26,<3
-pyarrow>=15
-pyyaml>=6
-requests>=2.31
+# Development environment: the pipeline plus data versioning, serving and test tools.
+-r requirements-pipeline.txt
 
-# Versioning and tracking
+# Versioning
 dvc>=3.50,<4
-mlflow>=3.0,<4
-
-# Modeling
-scikit-learn>=1.4,<2
-lightgbm>=4.3,<5
 
 # Serving (Phase 3). The image installs requirements-api.txt plus the model's own pins instead.
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
 httpx>=0.27   # FastAPI TestClient
-
-# Drift monitoring (Phase 4)
-evidently>=0.7,<0.8
 
 # Testing and linting
 pytest>=8

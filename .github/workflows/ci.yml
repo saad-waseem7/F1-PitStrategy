@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements*.txt
       - run: pip install -r requirements.txt
       - run: ruff check src tests airflow
       - run: python -m pytest -q
@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements*.txt
       - run: pip install -r requirements.txt
       # The real model lives in DVC. CI uses a throwaway synthetic one to prove the image works.
       - name: Train a throwaway champion
