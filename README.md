@@ -1,15 +1,15 @@
 # F1-PitStrategy
 
-Predicts tyre-wear pace loss and whether a pit stop should be considered, using Formula 1 lap, stint, and weather data from OpenF1.
+This branch builds the data pipeline for predicting tyre-wear pace loss and a pit recommendation from Formula 1 data.
 
 ## Included in this phase
 
-- OpenF1 ingestion and preprocessing for dry races.
-- Pace-loss and heuristic pit recommendation targets, with features based on earlier laps.
-- Regression and classification baselines, Random Forest, and LightGBM.
-- Grouped cross-validation by race session and a season-based test split.
-- MLflow tracking, model registration, and export of the champion model.
-- DVC stages for data and model files.
+- Downloads lap, stint, weather, race-control, and session data from OpenF1.
+- Saves raw data by session and retries failed or incomplete requests.
+- Removes unsuitable laps and wet or mixed-weather sessions.
+- Builds pace-loss and heuristic pit recommendation targets, plus past-lap features.
+- Splits the data by season: 2023 and 2024 for training, 2025 for testing.
+- Tracks the pipeline and data with DVC.
 
 ## Setup
 
@@ -23,23 +23,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 python -m pytest -q
-ruff check src tests
-dvc pull
-dvc repro
+python -m src.data.ingest
+python -m src.data.preprocess
 ```
 
-Run commands from the repository root. Use `python -m src.models.train` to run training directly, or `dvc repro` to run the pipeline.
+Run commands from the repository root. To run the configured pipeline, use `dvc repro`.
 
-## Evaluation
+## Data notes
 
-Training uses 2023 and 2024, with 2025 held out for testing. The regressor predicts pace loss in seconds, and the classifier predicts the probability of the heuristic pit label. Check `metrics/train_metrics.json` for the latest results.
+- The pipeline is designed for dry races. Wet and mixed-weather sessions are excluded.
+- The pit recommendation is a heuristic based on recent pace loss, not actual team strategy.
+- Data files are managed by DVC and are not committed directly to Git.
+- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy before they can use `dvc pull`.
 
-The classifier does not beat the recent-lap persistence baseline in the current reported test results. This is recorded in the metrics and should be considered when judging the model.
+## Tests
 
-## Data and model notes
-
-- Wet and mixed-weather races are out of scope.
-- Pit labels are heuristic, not ground truth about team decisions.
-- Data and the exported champion model are managed by DVC.
-- MLflow runs and the local model registry are not shared automatically.
-- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy or a shared remote before `dvc pull` will work.
+Run `python -m pytest -q`. Tests use synthetic data and do not need network access.
