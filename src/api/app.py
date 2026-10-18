@@ -96,6 +96,15 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
     async def _not_ready(_: Request, exc: ModelNotReady) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": "Model is not loaded yet or failed to load."})
 
+    def _log(request: Request, endpoint: str, lap: LapFeatures, pred: Prediction, latency_ms: float) -> None:
+        plog.write({
+            "request_id": request.state.request_id, "endpoint": endpoint, "inputs": lap.model_dump(),
+            "outputs": pred.model_dump(exclude={"warnings"}), "latency_ms": latency_ms,
+        })
+
+    def _ms(start: float) -> float:
+        return round((time.perf_counter() - start) * 1000, 2)
+
     def _run(laps: list[LapFeatures]) -> list[Prediction]:
         frame = pd.DataFrame([lap.model_dump() for lap in laps])
         try:
@@ -122,11 +131,7 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
     def predict(lap: LapFeatures, request: Request) -> PredictionResponse:
         start = time.perf_counter()
         pred = _run([lap])[0]
-        plog.write({
-            "request_id": request.state.request_id, "endpoint": "/predict", "inputs": lap.model_dump(),
-            "outputs": pred.model_dump(exclude={"warnings"}),
-            "latency_ms": round((time.perf_counter() - start) * 1000, 2),
-        })
+        _log(request, "/predict", lap, pred, _ms(start))
         return PredictionResponse(**pred.model_dump(), threshold=svc.threshold, request_id=request.state.request_id)
 
     @app.post("/predict/batch", response_model=BatchResponse, tags=["predict"])
@@ -135,12 +140,9 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
             raise HTTPException(status_code=413, detail=f"batch too large: {len(body.laps)} > {cfg.max_batch}")
         start = time.perf_counter()
         preds = _run(body.laps)
-        elapsed = round((time.perf_counter() - start) * 1000, 2)
+        elapsed = _ms(start)
         for lap, pred in zip(body.laps, preds, strict=True):
-            plog.write({
-                "request_id": request.state.request_id, "endpoint": "/predict/batch", "inputs": lap.model_dump(),
-                "outputs": pred.model_dump(exclude={"warnings"}), "latency_ms": elapsed,
-            })
+            _log(request, "/predict/batch", lap, pred, elapsed)
         return BatchResponse(predictions=preds, threshold=svc.threshold, request_id=request.state.request_id)
 
     @app.post("/predict/from-history", response_model=HistoryResponse, tags=["predict"])
@@ -163,11 +165,7 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         start = time.perf_counter()
         pred = _run([lap])[0]
-        plog.write({
-            "request_id": request.state.request_id, "endpoint": "/predict/from-history", "inputs": lap.model_dump(),
-            "outputs": pred.model_dump(exclude={"warnings"}),
-            "latency_ms": round((time.perf_counter() - start) * 1000, 2),
-        })
+        _log(request, "/predict/from-history", lap, pred, _ms(start))
         return HistoryResponse(
             **pred.model_dump(), threshold=svc.threshold, request_id=request.state.request_id,
             computed_features=feats,

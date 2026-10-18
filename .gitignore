@@ -22,8 +22,12 @@ mlflow.db
 
 # Local-only handoff notes
 HANDOFF.md
+scratch.md
 champion.zip
 processed.zip
 
 # Served-prediction logs
 logs/
+
+# Drift reports
+reports/

@@ -1,0 +1,48 @@
+name: Publish image
+
+# Manual only. Publishes the serving image WITH THE REAL MODEL, which CI cannot get while the DVC remote is a
+# folder on one laptop. Before first use: move the DVC remote to shared storage, then add repository secrets
+# DVC_REMOTE_URL (and, if the storage needs it, DVC_REMOTE_USER and DVC_REMOTE_PASSWORD). Not yet exercised.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag, for example champion-v5
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "dvc>=3.50,<4"
+      - name: Fetch the champion model from the DVC remote
+        env:
+          DVC_REMOTE_URL: ${{ secrets.DVC_REMOTE_URL }}
+          DVC_REMOTE_USER: ${{ secrets.DVC_REMOTE_USER }}
+          DVC_REMOTE_PASSWORD: ${{ secrets.DVC_REMOTE_PASSWORD }}
+        run: |
+          test -n "$DVC_REMOTE_URL" || { echo "Secret DVC_REMOTE_URL is not set; see the header of this workflow."; exit 1; }
+          dvc remote modify --local localstore url "$DVC_REMOTE_URL"
+          if [ -n "$DVC_REMOTE_USER" ]; then dvc remote modify --local localstore user "$DVC_REMOTE_USER"; fi
+          if [ -n "$DVC_REMOTE_PASSWORD" ]; then dvc remote modify --local localstore password "$DVC_REMOTE_PASSWORD"; fi
+          dvc pull models/champion
+          test -f models/champion/MLmodel
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/f1-pit-strategy:${{ inputs.tag }}
