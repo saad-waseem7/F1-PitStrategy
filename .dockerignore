@@ -15,3 +15,5 @@ logs/
 tests/
 HANDOFF.md
 *.zip
+airflow/
+reports/

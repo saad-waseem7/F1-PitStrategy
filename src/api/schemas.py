@@ -5,8 +5,10 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-DRY_COMPOUNDS: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD")
-WET_COMPOUNDS: tuple[str, ...] = ("INTERMEDIATE", "WET")
+from src.config import COMPOUNDS
+from src.features import WET_COMPOUNDS
+
+DRY_COMPOUNDS: tuple[str, ...] = tuple(c for c in COMPOUNDS if c not in WET_COMPOUNDS)
 
 Finite = dict(allow_inf_nan=False)
 
