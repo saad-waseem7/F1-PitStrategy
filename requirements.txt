@@ -14,6 +14,11 @@ mlflow>=3.0,<4
 scikit-learn>=1.4,<2
 lightgbm>=4.3,<5
 
+# Serving (Phase 3). The image installs requirements-api.txt plus the model's own pins instead.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx>=0.27   # FastAPI TestClient
+
 # Drift monitoring (Phase 4)
 evidently>=0.4.30
 
