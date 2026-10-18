@@ -63,6 +63,8 @@ jobs:
           python -c "import json; d=json.load(open('out.json')); assert 0 <= d['pit_probability'] <= 1, d"
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/predict -H 'content-type: application/json' -d "${body/MEDIUM/WET}")
           test "$code" = "422" || { echo "expected 422 for WET, got $code"; exit 1; }
+      - name: Web page is served
+        run: curl -fsS http://localhost:8000/ | grep -q '<title>Pit Wall</title>'
       - name: Container logs on failure
         if: failure()
         run: docker logs api

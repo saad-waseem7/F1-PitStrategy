@@ -1,11 +1,17 @@
 """Synthetic OpenF1-shaped data so tests never touch the network."""
 from __future__ import annotations
 
+import copy
+from pathlib import Path
+
+import mlflow
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.config import load_params
+from src.models.train import run
+from tests.test_train import _write_processed
 
 T0 = pd.Timestamp("2024-05-05 14:00:00", tz="UTC")
 LAP_S = 90.0
@@ -74,3 +80,18 @@ def _build_session(session_key: int, year: int, seed: int) -> dict[str, pd.DataF
 def raw_frames() -> dict[str, pd.DataFrame]:
     parts = [_build_session(1001, 2023, 1), _build_session(1002, 2024, 2), _build_session(1003, 2025, 3)]
     return {k: pd.concat([p[k] for p in parts], ignore_index=True) for k in parts[0]}
+
+
+@pytest.fixture(scope="session")
+def champion_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("api_model")
+    _write_processed(root / "processed")
+    params = copy.deepcopy(load_params())
+    tp = params["train"]
+    tp.update(cv_folds=3, lgbm_trials=2, latency_samples=5, permutation_sample=200)
+    tp["rf"].update(n_estimators=20)
+    tp["lgbm_classifier"].update(n_estimators=30)
+    tp["mlflow"].update(tracking_uri=f"sqlite:///{root / 'mlflow.db'}", artifact_root=str(root / "artifacts"))
+    run(data_dir=root / "processed", metrics_dir=root / "metrics", models_dir=root / "models", params=params)
+    mlflow.end_run()
+    return root / "models" / "champion"
