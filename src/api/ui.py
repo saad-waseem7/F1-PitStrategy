@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
+
+import pandas as pd
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.monitoring import read_drift_summary
-from src.api.schemas import DriftSummary, ReplayLap, ReplaySessions, ReplayStint
+from src.api.schemas import DriftSummary, ReplayLap, ReplaySessions, ReplayStint, ReplaySummary
 from src.api.service import ModelService
 from src.api.settings import Settings
 from src.config import FEATURE_COLUMNS
 from src.replay.store import ReplayError, ReplayStore
+from src.replay.summary import summarize
 
 LOG = logging.getLogger(__name__)
+
+SCORE_CHUNK = 5000
 
 # Scripts and styles only from this origin, no framing. Applied to the page and its assets, not to /docs,
 # whose Swagger UI needs inline scripts.
@@ -24,6 +30,11 @@ UI_SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
 }
+
+
+# The page is edited often and read from disk on every request. no-cache makes the browser re-check with the
+# server each time (a cheap 304 when nothing changed), so an edit shows on the next refresh.
+UI_CACHE_CONTROL = "no-cache"
 
 
 def is_ui_path(path: str) -> bool:
@@ -58,6 +69,28 @@ def register(app: FastAPI, cfg: Settings, svc: ModelService, replay: ReplayStore
         if not replay.available:
             return {"available": False}
         return {"available": True, "meta": replay.meta, "sessions": replay.sessions()}
+
+    summary_cache: dict[str, Any] = {}
+    summary_lock = threading.Lock()
+
+    @app.get("/replay/summary", response_model=ReplaySummary, tags=["replay"])
+    def replay_summary() -> dict[str, Any]:
+        """Model vs labels over the whole sample. Computed once per process, because model and sample are fixed."""
+        rows = replay.rows()
+        if rows is None:
+            return {"available": False}
+        with summary_lock:
+            if "value" not in summary_cache:
+                features = rows[list(FEATURE_COLUMNS)]
+                parts = [svc.predict(features.iloc[i:i + SCORE_CHUNK]) for i in range(0, len(features), SCORE_CHUNK)]
+                preds = pd.concat(parts, ignore_index=True)
+                scored = rows.assign(
+                    predicted_pace_loss_s=preds["pace_loss_s"].to_numpy(),
+                    pit_probability=preds["pit_probability"].to_numpy(),
+                    predicted_flag=preds["pit_recommended"].to_numpy(dtype=bool),
+                )
+                summary_cache["value"] = {"available": True, "threshold": svc.threshold, **summarize(scored)}
+            return summary_cache["value"]
 
     @app.get("/replay/stint", response_model=ReplayStint, tags=["replay"])
     def replay_stint(
@@ -104,4 +137,5 @@ def register(app: FastAPI, cfg: Settings, svc: ModelService, replay: ReplayStore
         if is_ui_path(request.url.path):
             for name, value in UI_SECURITY_HEADERS.items():
                 response.headers.setdefault(name, value)
+            response.headers["Cache-Control"] = UI_CACHE_CONTROL
         return response

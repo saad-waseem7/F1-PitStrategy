@@ -32,7 +32,7 @@ from src.api.settings import Settings
 LOG = logging.getLogger(__name__)
 
 NO_HISTORY_WARNING = "No lap history supplied: the lag features are missing and predictions are noticeably less accurate."
-WET_WARNING = "rainfall > 0: the model was trained on dry races only, so this prediction is unreliable."
+WET_WARNING = "It is raining (rainfall above 0). The model was trained on dry races only, so this prediction is unreliable."
 
 
 def _warnings(lap: LapFeatures) -> list[str]:

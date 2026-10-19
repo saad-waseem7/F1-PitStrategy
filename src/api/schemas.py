@@ -172,3 +172,37 @@ class DriftSummary(BaseModel):
     min_rows: int | None = None
     columns: dict[str, Any] = Field(default_factory=dict)
     skipped_constant_columns: list[str] = Field(default_factory=list)
+
+
+class ReplayMetrics(BaseModel):
+    laps: int
+    mae: float
+    rmse: float
+    bias: float
+    r2: float | None = None
+    flag_accuracy: float
+    precision: float | None = None
+    recall: float | None = None
+    f1: float | None = None
+    pr_auc: float | None = None
+    prevalence: float
+
+
+class ReplaySessionMetrics(BaseModel):
+    session_key: int
+    circuit: str
+    year: int
+    metrics: ReplayMetrics
+
+
+class ReplayCompoundMetrics(BaseModel):
+    compound: str
+    metrics: ReplayMetrics
+
+
+class ReplaySummary(BaseModel):
+    available: bool
+    threshold: float | None = None
+    overall: ReplayMetrics | None = None
+    by_session: list[ReplaySessionMetrics] = Field(default_factory=list)
+    by_compound: list[ReplayCompoundMetrics] = Field(default_factory=list)

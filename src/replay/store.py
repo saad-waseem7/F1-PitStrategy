@@ -106,6 +106,10 @@ class ReplayStore:
             })
         return sessions
 
+    def rows(self) -> pd.DataFrame | None:
+        """Every sampled lap, in session, driver, stint, lap order."""
+        return self._frame
+
     def sessions(self) -> list[dict[str, Any]]:
         return self._index
 

@@ -139,3 +139,5 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .card table { margin-bottom: 18px; }
 .card table:last-child { margin-bottom: 0; }
 pre.mono { white-space: pre-wrap; margin: 0; }
+h2.section { margin: 24px 0 10px; }
+.card details > table { margin-top: 8px; }

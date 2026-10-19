@@ -6,6 +6,47 @@
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// ---------------------------------------------------------------- readable names
+// The API speaks in variable names (tyre_age). People should never see them: every name that reaches the
+// screen goes through featureLabel() or humanizeText().
+const FEATURE_LABELS = {
+  tyre_age: "Tyre Age",
+  compound: "Compound",
+  stint_number: "Stint Number",
+  lap_number: "Lap Number",
+  race_progress: "Race Progress",
+  track_temperature: "Track Temperature",
+  air_temperature: "Air Temperature",
+  humidity: "Humidity",
+  rainfall: "Rainfall",
+  wind_speed: "Wind Speed",
+  track_temp_delta: "Track Temp Delta",
+  prev_lap_delta: "Previous Lap Delta",
+  pace_decay_slope: "Pace Decay Slope",
+  prev_gap_to_best: "Previous Gap To Best",
+  recent_gap_to_best: "Recent Gap To Best",
+  previous_laps: "Earlier Laps",
+};
+
+const SMALL_WORDS = new Set(["to", "of", "and", "the"]);
+
+function titleCase(name) {
+  return String(name)
+    .split("_")
+    .filter(Boolean)
+    .map((word, i) => (i && SMALL_WORDS.has(word) ? word : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(" ");
+}
+
+function featureLabel(name) {
+  return Object.prototype.hasOwnProperty.call(FEATURE_LABELS, name) ? FEATURE_LABELS[name] : titleCase(name);
+}
+
+/* Replace any snake_case token inside a sentence, such as an API error message, with its readable name. */
+function humanizeText(text) {
+  return String(text).replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g, (token) => featureLabel(token));
+}
+
 // ---------------------------------------------------------------- DOM helpers
 function h(tag, attrs, ...children) {
   const node = document.createElement(tag);
@@ -49,12 +90,12 @@ class ApiError extends Error {
 }
 
 function describeDetail(detail) {
-  if (typeof detail === "string") return detail;
+  if (typeof detail === "string") return humanizeText(detail);
   if (Array.isArray(detail)) {
     return detail
       .map((item) => {
-        const where = Array.isArray(item.loc) ? item.loc.filter((p) => p !== "body").join(".") : "";
-        return where ? `${where}: ${item.msg}` : String(item.msg);
+        const where = Array.isArray(item.loc) ? item.loc.filter((p) => p !== "body").map(featureLabel).join(" ") : "";
+        return where ? `${where}: ${humanizeText(item.msg)}` : humanizeText(item.msg);
       })
       .join("\n");
   }
@@ -361,9 +402,9 @@ function renderPrediction(r, usedHistory) {
     h("div", { class: "stats" }, stat("Pace loss", `${fmt(r.pace_loss_s)} s`), stat("Pit probability", pct(r.pit_probability, 1))),
     probabilityMeter(r.pit_probability, r.threshold),
   ];
-  for (const warning of r.warnings || []) parts.push(h("div", { class: "notice" }, warning));
+  for (const warning of r.warnings || []) parts.push(h("div", { class: "notice" }, humanizeText(warning)));
   if (r.computed_features) {
-    const rows = Object.entries(r.computed_features).map(([k, v]) => [k, v === null ? "not enough laps" : fmt(v, 3)]);
+    const rows = Object.entries(r.computed_features).map(([k, v]) => [featureLabel(k), v === null ? "not enough laps" : fmt(v, 3)]);
     parts.push(h("details", null, h("summary", null, "Computed Lag Features"), dataTable(["Feature", "Value"], rows)));
   }
   parts.push(h("p", { class: "mono" }, `request ${r.request_id}`));
@@ -406,11 +447,22 @@ async function renderReplay(view) {
         : `These races come from the ${meta.split || "unknown"} split, so the model may have seen them in training. Do not read the fit as accuracy.`),
   );
 
+  const overview = h("div", { "aria-live": "polite" });
+  body.append(overview);
+  Promise.allSettled([api("/replay/summary"), api("/model-info")]).then(([summary, info]) => {
+    if (summary.status === "rejected") {
+      overview.append(errorNotice(summary.reason));
+    } else if (summary.value.available) {
+      overview.append(renderOverview(summary.value, info.status === "fulfilled" ? info.value : null));
+    }
+  });
+
   const sessionSel = h("select", { id: "session" });
   const driverSel = h("select", { id: "driver" });
   const stintSel = h("select", { id: "stint" });
   const out = h("div", { "aria-live": "polite" });
   body.append(
+    h("h2", { class: "section" }, "Single stint"),
     h("div", { class: "card" },
       h("div", { class: "fields" },
         h("div", { class: "field" }, h("label", { for: "session" }, "Race"), sessionSel),
@@ -455,6 +507,40 @@ async function renderReplay(view) {
   driverSel.addEventListener("change", onDriver);
   stintSel.addEventListener("change", load);
   onSession();
+}
+
+const signed = (value, digits = 2) => (Number.isFinite(value) ? `${value > 0 ? "+" : ""}${value.toFixed(digits)}` : "n/a");
+
+function metricRow(label, m) {
+  return [label, m.laps, fmt(m.mae), signed(m.bias), pct(m.flag_accuracy), m.f1 === null ? "n/a" : fmt(m.f1, 2)];
+}
+
+function renderOverview(summary, info) {
+  const o = summary.overall;
+  const reference = ((info && info.test_metrics) || {});
+  const full = reference.test_regression;
+  const fullFlag = reference.test_classification;
+  const head = ["", "Laps", "MAE s", "Bias s", "Flag acc.", "F1"];
+  return h("div", { class: "card" },
+    h("h2", null, "Whole sample"),
+    h("div", { class: "stats" },
+      stat("Laps scored", o.laps), stat("Mean abs. error", `${fmt(o.mae)} s`), stat("Bias (pred. minus actual)", `${signed(o.bias)} s`),
+      stat("R\u00b2", o.r2 === null ? "n/a" : fmt(o.r2, 2)), stat("Flag accuracy", pct(o.flag_accuracy)),
+      stat("Precision", o.precision === null ? "n/a" : pct(o.precision)), stat("Recall", o.recall === null ? "n/a" : pct(o.recall)),
+      stat("PR-AUC", o.pr_auc === null ? "n/a" : fmt(o.pr_auc, 3))),
+    h("p", { class: "hint" },
+      "Bias is the average of predicted minus actual pace loss: positive means the model overstates tyre wear, negative means it understates it. ",
+      `The flag is "box" at probability ${pct(summary.threshold, 1)} or more; ${pct(o.prevalence)} of these laps are labelled box.`),
+    full && fullFlag
+      ? h("div", { class: "notice info" },
+        `Full test set, from the training report: MAE ${fmt(full.mae, 3)} s, R\u00b2 ${fmt(full.r2, 2)}, PR-AUC ${fmt(fullFlag.pr_auc, 3)}, F1 ${fmt(fullFlag.f1, 3)}. `,
+        "They match when the sample holds every test race; a sample with fewer races will differ.")
+      : null,
+    h("details", { open: true }, h("summary", null, "By race"),
+      dataTable(head, summary.by_session.map((x) => metricRow(`${x.circuit} ${x.year}`, x.metrics)))),
+    h("details", null, h("summary", null, "By tyre compound"),
+      dataTable(head, summary.by_compound.map((x) => metricRow(x.compound, x.metrics)))),
+  );
 }
 
 function renderStint(stint) {
@@ -539,7 +625,7 @@ async function renderModel(view) {
       m.created_utc ? h("p", { class: "hint" }, `Exported ${m.created_utc}`) : null,
       metricsTable("Held-out Regression", (m.test_metrics || {}).test_regression),
       metricsTable("Held-out Pit Flag", (m.test_metrics || {}).test_classification),
-      h("details", null, h("summary", null, "Input Features"), h("div", { class: "chips" }, (m.features || []).map((f) => h("span", { class: "chip" }, f)))),
+      h("details", null, h("summary", null, "Input Features"), h("div", { class: "chips" }, (m.features || []).map((f) => h("span", { class: "chip" }, featureLabel(f))))),
     ]);
   }
 
@@ -574,11 +660,11 @@ function renderDrift(card, d) {
     d.generated_at ? h("p", { class: "hint" }, `Generated ${d.generated_at}`) : null,
   ]);
   if ((d.drifted_columns || []).length) {
-    card.append(h("div", { class: "chips" }, d.drifted_columns.map((c) => h("span", { class: "chip drift" }, c))));
+    card.append(h("div", { class: "chips" }, d.drifted_columns.map((c) => h("span", { class: "chip drift" }, featureLabel(c)))));
   }
   const columns = Object.entries(d.columns || {});
   if (columns.length) {
-    const rows = columns.map(([name, v]) => [name, String(v.method), fmt(v.value, 3), fmt(v.threshold, 2), v.drifted ? "drifted" : "ok"]);
+    const rows = columns.map(([name, v]) => [featureLabel(name), String(v.method), fmt(v.value, 3), fmt(v.threshold, 2), v.drifted ? "drifted" : "ok"]);
     card.append(h("details", null, h("summary", null, "Per-column results"), dataTable(["Column", "Test", "Value", "Limit", "Result"], rows)));
   }
 }
