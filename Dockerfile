@@ -33,6 +33,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PREDICTION_LOG=/app/logs/predictions.jsonl
 WORKDIR /app
 COPY src ./src
+COPY web ./web
+COPY replay ./replay
 COPY params.yaml ./
 COPY metrics/train_metrics.json ./metrics/train_metrics.json
 COPY models/champion ./models/champion

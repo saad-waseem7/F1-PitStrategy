@@ -1,20 +1,16 @@
 """HTTP behaviour of the service, against a model trained on synthetic data by the real training code."""
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 
-import mlflow
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.service import ModelService
 from src.api.settings import Settings
-from src.config import PROJECT_ROOT, load_params
-from src.models.train import run
-from tests.test_train import _write_processed
+from src.config import PROJECT_ROOT
 
 ROW = {
     "tyre_age": 18, "compound": "MEDIUM", "stint_number": 1, "lap_number": 22, "race_progress": 0.38,
@@ -22,21 +18,6 @@ ROW = {
     "track_temp_delta": 1.2, "prev_lap_delta": 0.15, "pace_decay_slope": 0.08,
     "prev_gap_to_best": 0.4, "recent_gap_to_best": 0.5,
 }
-
-
-@pytest.fixture(scope="session")
-def champion_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("api_model")
-    _write_processed(root / "processed")
-    params = copy.deepcopy(load_params())
-    tp = params["train"]
-    tp.update(cv_folds=3, lgbm_trials=2, latency_samples=5, permutation_sample=200)
-    tp["rf"].update(n_estimators=20)
-    tp["lgbm_classifier"].update(n_estimators=30)
-    tp["mlflow"].update(tracking_uri=f"sqlite:///{root / 'mlflow.db'}", artifact_root=str(root / "artifacts"))
-    run(data_dir=root / "processed", metrics_dir=root / "metrics", models_dir=root / "models", params=params)
-    mlflow.end_run()
-    return root / "models" / "champion"
 
 
 def _settings(champion: Path, tmp_path: Path, **kw) -> Settings:

@@ -13,6 +13,8 @@ services:
     volumes:
       # Served predictions, one JSON object per line. Drift monitoring reads this.
       - api-logs:/app/logs
+      # The drift report Airflow writes into this checkout, read-only, for the Model & monitoring page.
+      - ./reports:/app/reports:ro
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

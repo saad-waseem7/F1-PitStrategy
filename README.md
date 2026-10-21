@@ -70,6 +70,16 @@ Reports are written to `reports/drift/`. Fewer than 200 logged requests is treat
 
 GitHub Actions runs linting and tests, a Docker smoke test using a temporary synthetic model, and Airflow DAG tests. The manual image-publish workflow needs a shared DVC remote and repository secrets before it can be used.
 
+## Web app
+
+With the API running, open `http://localhost:8000/`. Three pages:
+
+- **Predict**: enter a lap, optionally with the stint's earlier lap times, and get pace loss, pit probability and a box or stay out call.
+- **Stint replay**: pick a race, driver and stint from a small bundled sample and compare the model's per-lap output with what actually happened. The sample is built from the held-out test split: `python -m src.replay.build_sample`, then commit `replay/sample.json.gz` and rebuild the image. Replay calls are not written to the prediction log, so they do not affect drift checks.
+- **Model & monitoring**: the champion's version, held-out metrics and the latest drift report. The report appears after the Airflow DAG or `python -m src.monitoring.drift` has run.
+
+The page is plain HTML and JavaScript in `web/`, with no build step. It is served with a strict content security policy and never inserts strings as HTML. It has no login, so keep it on a trusted network.
+
 ## Tests
 
 Run `python -m pytest -q`. Tests use synthetic data and do not need network access.

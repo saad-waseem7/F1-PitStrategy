@@ -109,3 +109,66 @@ class ModelInfo(BaseModel):
     champion_version: str | None = None
     algorithm: str | None = None
     test_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplayStintInfo(BaseModel):
+    stint_number: int
+    compound: str
+    laps: int
+    first_lap: int
+    last_lap: int
+
+
+class ReplayDriver(BaseModel):
+    driver_number: int
+    stints: list[ReplayStintInfo]
+
+
+class ReplaySession(BaseModel):
+    session_key: int
+    circuit: str
+    year: int
+    drivers: list[ReplayDriver]
+
+
+class ReplaySessions(BaseModel):
+    available: bool
+    meta: dict[str, Any] = Field(default_factory=dict)
+    sessions: list[ReplaySession] = Field(default_factory=list)
+
+
+class ReplayLap(BaseModel):
+    lap_number: int
+    tyre_age: float
+    compound: str
+    actual_pace_loss_s: float
+    actual_pit_recommended: bool
+    predicted_pace_loss_s: float
+    pit_probability: float
+    pit_recommended: bool
+
+
+class ReplayStint(BaseModel):
+    session_key: int
+    driver_number: int
+    stint_number: int
+    circuit: str
+    year: int
+    threshold: float
+    laps: list[ReplayLap]
+
+
+class DriftSummary(BaseModel):
+    """The drift check's latest result. `status` is also "no_report" or "unreadable" when there is none."""
+
+    status: str
+    generated_at: str | None = None
+    drift_detected: bool | None = None
+    drifted_columns: list[str] = Field(default_factory=list)
+    share_drifted: float | None = None
+    drift_share_threshold: float | None = None
+    n_current: int | None = None
+    n_reference: int | None = None
+    min_rows: int | None = None
+    columns: dict[str, Any] = Field(default_factory=dict)
+    skipped_constant_columns: list[str] = Field(default_factory=list)

@@ -25,6 +25,7 @@ from src.api.schemas import (
     Prediction,
     PredictionResponse,
 )
+from src.api import ui
 from src.api.service import ModelNotReady, ModelService
 from src.api.settings import Settings
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
     cfg = settings or Settings.from_env()
     svc = service or ModelService(cfg.model_dir, cfg.metrics_path, cfg.params_path)
     plog = PredictionLog(cfg.prediction_log)
+    replay = ui.load_replay_store(cfg)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -171,6 +173,7 @@ def create_app(settings: Settings | None = None, service: ModelService | None = 
             computed_features=feats,
         )
 
+    ui.register(app, cfg, svc, replay)
     return app
 
 

@@ -29,5 +29,6 @@ processed.zip
 # Served-prediction logs
 logs/
 
-# Drift reports
-reports/
+# Drift reports (the folder itself is tracked so Docker never creates it as root)
+reports/*
+!reports/.gitkeep
