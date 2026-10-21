@@ -13,6 +13,10 @@ services:
     volumes:
       # Served predictions, one JSON object per line. Drift monitoring reads this.
       - api-logs:/app/logs
+      # The page and the replay sample are read from this checkout, so editing web/ shows on the next browser
+      # refresh and a new replay sample needs only `docker compose restart api`. No rebuild for either.
+      - ./web:/app/web:ro
+      - ./replay:/app/replay:ro
       # The drift report Airflow writes into this checkout, read-only, for the Model & monitoring page.
       - ./reports:/app/reports:ro
     restart: unless-stopped

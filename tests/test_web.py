@@ -200,3 +200,140 @@ def test_read_drift_summary_rejects_non_objects(tmp_path):
     path = tmp_path / "s.json"
     path.write_text("[1, 2]", encoding="utf-8")
     assert read_drift_summary(path) == {"status": "unreadable"}
+
+
+# ------------------------------------------------------------------ replay summary
+def _scored(actual, pred, label, prob, flag, compound="MEDIUM", session=1):
+    return pd.DataFrame({
+        "session_key": session, "circuit_short_name": "T", "year": 2025, "compound": compound,
+        "pace_loss_s": actual, "predicted_pace_loss_s": pred, "pit_recommended": label,
+        "pit_probability": prob, "predicted_flag": flag,
+    })
+
+
+def test_metrics_match_hand_computed_values():
+    from src.replay.summary import metrics
+
+    m = metrics(_scored([1.0, 2.0, 3.0, 4.0], [1.5, 2.0, 2.0, 5.0], [False, False, True, True],
+                        [0.1, 0.6, 0.4, 0.9], [False, True, False, True]))
+    assert m["laps"] == 4 and m["mae"] == pytest.approx(0.625) and m["bias"] == pytest.approx(0.125)
+    assert m["rmse"] == pytest.approx(np.sqrt((0.25 + 0 + 1 + 1) / 4))
+    assert m["r2"] == pytest.approx(1 - 2.25 / 5.0)
+    assert m["flag_accuracy"] == 0.5 and m["precision"] == 0.5 and m["recall"] == 0.5 and m["f1"] == pytest.approx(0.5)
+    assert m["prevalence"] == 0.5 and 0 < m["pr_auc"] <= 1
+
+
+def test_metrics_report_none_when_the_data_cannot_support_them():
+    from src.replay.summary import metrics
+
+    m = metrics(_scored([1.0, 1.0], [1.0, 1.2], [False, False], [0.1, 0.2], [False, False]))
+    assert m["r2"] is None and m["pr_auc"] is None and m["precision"] is None and m["recall"] is None and m["f1"] is None
+    assert m["flag_accuracy"] == 1.0 and m["bias"] == pytest.approx(0.1)
+    with pytest.raises(ValueError):
+        metrics(_scored([], [], [], [], []))
+
+
+def test_summary_endpoint_matches_a_direct_computation(champion_dir, tmp_path, sample_path):
+    from src.replay.summary import metrics
+
+    with _client(champion_dir, tmp_path, replay_path=sample_path) as c:
+        r = c.get("/replay/summary")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        svc = c.app.state.service
+        store = ReplayStore(sample_path)
+        store.load()
+        rows = store.rows()
+        preds = svc.predict(rows[list(FEATURE_COLUMNS)])
+        expected = metrics(rows.assign(
+            predicted_pace_loss_s=preds["pace_loss_s"].to_numpy(), pit_probability=preds["pit_probability"].to_numpy(),
+            predicted_flag=preds["pit_recommended"].to_numpy(dtype=bool)))
+        assert body["available"] and body["threshold"] == svc.threshold
+        assert body["overall"]["laps"] == len(rows) == sum(s["metrics"]["laps"] for s in body["by_session"])
+        assert body["overall"]["mae"] == pytest.approx(expected["mae"]) and body["overall"]["bias"] == pytest.approx(expected["bias"])
+        assert len(body["by_session"]) == 2 and {x["compound"] for x in body["by_compound"]} <= {"SOFT", "MEDIUM", "HARD"}
+        assert c.get("/replay/summary").json() == body  # cached, identical
+
+
+def test_summary_is_unavailable_without_a_sample_and_not_logged(champion_dir, tmp_path):
+    with _client(champion_dir, tmp_path, replay_path=tmp_path / "missing.json.gz") as c:
+        assert c.get("/replay/summary").json() == {
+            "available": False, "threshold": None, "overall": None, "by_session": [], "by_compound": []}
+    assert not (tmp_path / "logs" / "predictions.jsonl").exists()
+
+
+def test_builder_keeps_every_race_by_default(tmp_path):
+    _write_processed(tmp_path / "p")
+    meta = build_sample.build(tmp_path / "p" / "test.parquet", tmp_path / "all.json.gz")
+    every = pd.read_parquet(tmp_path / "p" / "test.parquet")
+    assert meta["sessions"] == sorted(int(k) for k in every["session_key"].unique()) and meta["rows"] == len(every)
+    assert build_sample.build(tmp_path / "p" / "test.parquet", tmp_path / "big.json.gz", races=999)["rows"] == len(every)
+    assert build_sample.main(["--input", str(tmp_path / "p" / "test.parquet"), "--output", str(tmp_path / "cli.json.gz")]) == 0
+
+
+# ------------------------------------------------------------------ readable names and rebuild-free edits
+APP_JS = (WEB_DIR / "assets" / "app.js").read_text(encoding="utf-8")
+
+
+def _labels() -> dict[str, str]:
+    block = re.search(r"const FEATURE_LABELS = \{(.*?)\n\};", APP_JS, flags=re.S).group(1)
+    return dict(re.findall(r'(\w+): "([^"]+)"', block))
+
+
+def test_every_model_feature_has_a_readable_label():
+    labels = _labels()
+    assert set(FEATURE_COLUMNS) <= set(labels), set(FEATURE_COLUMNS) - set(labels)
+    for name, label in labels.items():
+        assert "_" not in label and label[0].isupper(), (name, label)
+        assert all(w[0].isupper() or w in {"To", "Of", "And", "The", "to", "of", "and", "the"} for w in label.split()), label
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_label_helpers_never_leak_variable_names():
+    start = APP_JS.index("// ---------------------------------------------------------------- readable names")
+    end = APP_JS.index("// ---------------------------------------------------------------- DOM helpers")
+    script = APP_JS[start:end] + """
+      const out = [featureLabel("tyre_age"), featureLabel("recent_gap_to_best"), featureLabel("some_new_feature"),
+        humanizeText("lap_number: Input should be less than or equal to 120"),
+        humanizeText("previous_laps must be ordered by strictly increasing lap_number"), humanizeText("no names here")];
+      console.log(JSON.stringify(out));
+    """
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        "Tyre Age", "Recent Gap To Best", "Some New Feature",
+        "Lap Number: Input should be less than or equal to 120",
+        "Earlier Laps must be ordered by strictly increasing Lap Number", "no names here",
+    ]
+
+
+def test_ui_is_revalidated_on_every_load_so_edits_show_without_a_rebuild(champion_dir, tmp_path):
+    with _client(champion_dir, tmp_path) as c:
+        for path in ("/", "/assets/app.js", "/assets/style.css"):
+            assert c.get(path).headers["cache-control"] == "no-cache", path
+        assert "cache-control" not in c.get("/health").headers
+
+
+def test_edited_page_files_are_served_as_they_are_on_disk(champion_dir, tmp_path):
+    web = tmp_path / "web"
+    (web / "assets").mkdir(parents=True)
+    (web / "index.html").write_text("<title>one</title>", encoding="utf-8")
+    (web / "assets" / "app.js").write_text("// one", encoding="utf-8")
+    with _client(champion_dir, tmp_path, web_dir=web) as c:
+        assert "one" in c.get("/").text and "one" in c.get("/assets/app.js").text
+        (web / "index.html").write_text("<title>two</title>", encoding="utf-8")
+        (web / "assets" / "app.js").write_text("// two, longer", encoding="utf-8")
+        assert "two" in c.get("/").text and "two" in c.get("/assets/app.js").text  # no restart, no rebuild
+
+
+def test_compose_mounts_the_page_and_the_replay_sample_from_the_checkout():
+    import yaml
+
+    volumes = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))["services"]["api"]["volumes"]
+    assert "./web:/app/web:ro" in volumes and "./replay:/app/replay:ro" in volumes
+
+
+def test_wet_warning_names_no_variable():
+    from src.api.app import NO_HISTORY_WARNING, WET_WARNING
+
+    assert not re.search(r"\b[a-z]+_[a-z_]+\b", WET_WARNING + NO_HISTORY_WARNING)
