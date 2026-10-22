@@ -337,3 +337,77 @@ def test_wet_warning_names_no_variable():
     from src.api.app import NO_HISTORY_WARNING, WET_WARNING
 
     assert not re.search(r"\b[a-z]+_[a-z_]+\b", WET_WARNING + NO_HISTORY_WARNING)
+
+
+
+# ------------------------------------------------------------------ design system, fonts and batch page
+def test_every_stylesheet_url_exists_and_fonts_ship_with_their_licences():
+    css = (WEB_DIR / "assets" / "style.css").read_text(encoding="utf-8")
+    urls = re.findall(r'url\("([^"]+)"\)', css)
+    assert len(urls) >= 6
+    for url in urls:
+        assert not url.startswith(("http:", "https:", "//")), f"external asset would break the CSP: {url}"
+        assert (WEB_DIR / "assets" / url).is_file(), url
+    licences = {p.name for p in (WEB_DIR / "assets" / "fonts").glob("LICENSE-*.txt")}
+    assert {"LICENSE-barlow-semi-condensed.txt", "LICENSE-ibm-plex-sans.txt"} <= licences
+
+
+def test_fonts_are_served_from_the_same_origin(champion_dir, tmp_path):
+    with _client(champion_dir, tmp_path) as c:
+        r = c.get("/assets/fonts/ibm-plex-sans-latin-400-normal.woff2")
+        assert r.status_code == 200 and r.headers["content-type"].startswith("font/woff2")
+        assert "default-src 'self'" in r.headers["content-security-policy"]
+        page = c.get("/").text
+        assert page.count('data-route="') == 4 and 'href="#batch"' in page
+
+
+def test_stylesheet_has_light_and_dark_themes_and_respects_reduced_motion():
+    css = (WEB_DIR / "assets" / "style.css").read_text(encoding="utf-8")
+    assert "prefers-color-scheme: light" in css and "prefers-reduced-motion: no-preference" in css
+    assert ":focus-visible" in css
+
+
+def test_screen_text_uses_title_case_for_labels():
+    for old in (
+        "Flag accuracy", "By race", "By tyre compound", "Pace loss", "Pit probability", "Laps scored",
+        "Per-column results", "Flag acc.", "P(pit)", "Pit rate", "Load example", "Lap table",
+    ):
+        assert f'"{old}"' not in APP_JS, old
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_batch_csv_parsing_and_validation():
+    names = APP_JS[APP_JS.index("// ---------------------------------------------------------------- readable names"):APP_JS.index("// ---------------------------------------------------------------- DOM helpers")]
+    batch = APP_JS[APP_JS.index("// ---------------------------------------------------------------- page: batch"):APP_JS.index("// ---------------------------------------------------------------- page: replay")]
+    probe = (Path(__file__).parent / "js" / "batch_probe.js").read_text(encoding="utf-8")
+    result = subprocess.run(["node", "-e", names + batch + probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["quoted"] == [["a", "b,c", 'say "hi"'], ["1", "2", "3"]]
+    assert out["bom_semicolon"] == [["a", "b"], ["1", "2"]]
+    assert out["blank_lines"] == [["a", "b"], ["1", "2"]]
+    assert out["good"] == {
+        "compound": "MEDIUM", "tyre_age": 14, "stint_number": 1, "lap_number": 18, "race_progress": 0.3,
+        "track_temperature": 38, "air_temperature": 27, "humidity": 45, "wind_speed": 2.5,
+    }
+    assert out["length_instead"] == 0.4
+    assert out["optional_kept"]["prev_lap_delta"] == 0.25 and out["optional_kept"]["rainfall"] == 1
+    assert out["missing"].startswith("ERROR: Missing columns: Stint Number, Lap Number")
+    assert "_" not in out["missing"]
+    assert out["not_number"] == 'ERROR: Row 2, Tyre Age: "abc" is not a number.'
+    assert out["empty_required"] == "ERROR: Row 1, Tyre Age: a value is required."
+    assert "Row 1, Tyre Age" in out["hex_rejected"]
+    assert out["no_rows"] == "ERROR: Add a header row and at least one lap."
+    assert "never closed" in out["unclosed"]
+    assert out["csv"] == ["'=1+1", "-0.5", "'@x", '"a,b"', '"q""q"', "0.25"]
+
+
+def test_batch_endpoint_errors_carry_the_row_index_the_page_turns_into_a_row_number(champion_dir, tmp_path):
+    good = {
+        "tyre_age": 5, "compound": "SOFT", "stint_number": 1, "lap_number": 5, "race_progress": 0.1,
+        "track_temperature": 30, "air_temperature": 20, "humidity": 40, "wind_speed": 1,
+    }
+    with _client(champion_dir, tmp_path) as c:
+        r = c.post("/predict/batch", json={"laps": [good, good, {**good, "tyre_age": 500}]})
+        assert r.status_code == 422
+        assert r.json()["detail"][0]["loc"][:4] == ["body", "laps", 2, "tyre_age"]
