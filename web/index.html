@@ -3,21 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>Pit Wall</title>
   <meta name="description" content="Tyre-wear pace loss and pit recommendations for dry Formula 1 races.">
   <link rel="icon" href="data:,">
+  <link rel="preload" href="/assets/fonts/barlow-semi-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/assets/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
   <header class="bar">
     <div class="bar-inner">
-      <a class="brand" href="#predict"><span class="brand-mark" aria-hidden="true"></span>Pit Wall</a>
+      <a class="brand" href="#predict"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>Pit Wall</a>
       <nav aria-label="Pages">
         <a href="#predict" data-route="predict">Predict</a>
+        <a href="#batch" data-route="batch">Batch</a>
         <a href="#replay" data-route="replay">Stint Replay</a>
         <a href="#model" data-route="model">Model &amp; Monitoring</a>
       </nav>
-      <span id="status" class="pill" role="status">Checking Model</span>
+      <span id="status" class="status" role="status" data-state="checking"><span class="dot" aria-hidden="true"></span><span id="status-text">Checking Model</span></span>
     </div>
   </header>
   <main id="view" tabindex="-1"></main>

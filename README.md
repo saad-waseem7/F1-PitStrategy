@@ -72,13 +72,14 @@ GitHub Actions runs linting and tests, a Docker smoke test using a temporary syn
 
 ## Web app
 
-With the API running, open `http://localhost:8000/`. Three pages:
+With the API running, open `http://localhost:8000/`. Four pages:
 
 - **Predict**: enter a lap, optionally with the stint's earlier lap times, and get pace loss, pit probability and a box or stay out call.
+- **Batch**: upload or paste a CSV of laps (the template button gives the columns), score them in one request, and download the calls as a CSV. Row numbers in error messages count laps after the header.
 - **Stint replay**: an overview of how the model scores a whole sample (error, bias, R², pit flag precision and recall, per race and per tyre compound), then a per-stint view comparing the model's per-lap output with what actually happened. The sample is built from the held-out test split and keeps every race by default: `python -m src.replay.build_sample` (use `--races N` for a smaller one), then commit `replay/sample.json.gz` and run `docker compose restart api`. Replay calls are not written to the prediction log, so they do not affect drift checks.
 - **Model & monitoring**: the champion's version, held-out metrics and the latest drift report. The report appears after the Airflow DAG or `python -m src.monitoring.drift` has run.
 
-The page is plain HTML and JavaScript in `web/`, with no build step. `web/`, `replay/` and `reports/` are bind-mounted into the container, so edits to `web/` show up on a browser refresh with no rebuild. Changes to Python code still need `docker compose up --build -d`. It is served with a strict content security policy and never inserts strings as HTML. It has no login, so keep it on a trusted network.
+The page is plain HTML, CSS and JavaScript in `web/`, with no build step. Fonts (Barlow Semi Condensed and IBM Plex Sans, both SIL Open Font License) are served from `web/assets/fonts/`, so nothing loads from a CDN. It follows the operating system's light or dark setting. `web/`, `replay/` and `reports/` are bind-mounted into the container, so edits to `web/` show up on a browser refresh with no rebuild. Changes to Python code still need `docker compose up --build -d`. It is served with a strict content security policy and never inserts strings as HTML. It has no login, so keep it on a trusted network.
 
 ## Tests
 
