@@ -1,24 +1,23 @@
 # F1-PitStrategy
 
-This project predicts tyre-wear pace loss and a pit recommendation from Formula 1 data.
+A tyre-wear and pit-stop predictor for Formula 1, built as the CS4085 MLOps project at FAST-NUCES Lahore. Give it a lap (tyre age, compound, weather, how far into the race) and it estimates how many seconds the tyres are costing, then says whether to box or stay out.
 
-## What is included
+It covers data ingestion from OpenF1, a DVC pipeline, MLflow-tracked training, a FastAPI service, a small web app, drift monitoring and a weekly Airflow retrain. Only dry races are supported, and the pit call is a rule of thumb, not real team strategy.
 
-- Downloads lap, stint, weather, race-control, and session data from OpenF1.
-- Saves raw data by session and retries failed or incomplete requests.
-- Removes unsuitable laps and wet or mixed-weather sessions.
-- Builds pace-loss and heuristic pit recommendation targets, plus past-lap features.
-- Splits the data by season: 2023 and 2024 for training, 2025 for testing.
-- Tracks the pipeline and data with DVC.
-- Regression and classification training, evaluation, and MLflow tracking.
-- FastAPI prediction service with single-lap, batch, and history-based endpoints.
-- Docker and Docker Compose setup.
-- GitHub Actions checks for linting, tests, and a Docker smoke test.
-- Evidently input-drift reports and a weekly Airflow retraining DAG.
+## How well does it work?
 
-## Setup
+Trained on 2023 and 2024, tested on 2025 (18,373 laps).
 
-Requirements: Python 3.11, Git, DVC, and Docker.
+| | Naive baseline | LightGBM (champion) |
+|---|---|---|
+| Pace loss error (MAE, seconds) | 0.531 | **0.375** |
+| Pit flag PR-AUC | 0.448 | **0.884** |
+
+The baseline just looks up the typical value for a compound and tyre age. LightGBM cuts the error by about 29% against it. R² is 0.49, so it is useful but not sharp. One caveat: a baseline that reuses the actual pace loss of the previous laps scores higher on the pit flag (PR-AUC 0.951). It reads information a live service would not have, so we report it instead of chasing it.
+
+## Run it
+
+You need Python 3.11, Git and DVC, plus Docker for the app.
 
 ```bash
 git clone git@github.com:saad-waseem7/F1-PitStrategy.git
@@ -26,67 +25,104 @@ cd F1-PitStrategy
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
 python -m pytest -q
-python -m src.data.ingest
-python -m src.data.preprocess
 ```
 
-Run commands from the repository root. To run the configured pipeline, use `dvc repro`. The API needs `models/champion`; if you have access to the DVC remote, run `dvc pull` first.
+The data and the trained model (`models/champion`) are tracked by DVC, not Git. The DVC remote in `.dvc/config` is a folder on the author's laptop, so `dvc pull` only works there. Anyone else has two options: run `dvc repro` (slow, because OpenF1 is throttled, and numbers can shift a little if OpenF1 changes its data), or point DVC at storage of your own with `dvc remote modify localstore url <path>`.
 
-## Data notes
-
-- The pipeline is designed for dry races. Wet and mixed-weather sessions are excluded.
-- The pit recommendation is a heuristic based on recent pace loss, not actual team strategy.
-- Data files are managed by DVC and are not committed directly to Git.
-
-## Run the API
+With the model in place:
 
 ```bash
 docker compose up --build -d
 ```
 
-The API is available at `http://localhost:8000`, with interactive docs at `http://localhost:8000/docs`.
+Then open `http://localhost:8000/` for the app and `http://localhost:8000/docs` for the API docs.
 
-To start the API and Airflow:
+## How it works
+
+| Stage | Command | Output |
+|---|---|---|
+| ingest | `python -m src.data.ingest` | `data/raw/` |
+| preprocess | `python -m src.data.preprocess` | `data/processed/` |
+| train | `python -m src.models.train` | `models/champion/` |
+
+`dvc repro` runs them in order, and every setting lives in `params.yaml`.
+
+We start with 77,075 raw laps from 61 dry race sessions and keep 51,833 after dropping lap 1, pit laps, safety car laps, wet sessions and slow outliers. Pace loss is a lap's fuel-corrected time minus the stint's reference pace. The pit flag is set when the average pace loss over the last 3 laps reaches 1 second, which is a heuristic and not a real team decision.
+
+There are 15 features: tyre age, compound, stint and lap number, race progress, the weather, and four lag features built only from earlier laps of the same stint (recent lap change, pace decay slope, and the gap to the best lap so far). The lag features are missing early in a stint.
+
+Training compares a naive baseline, a random forest and LightGBM with 5-fold cross-validation grouped by race, so no race appears on both sides. The run fails on purpose if the model is not at least 5% better than the baseline, and a new model only replaces the champion if it is clearly better. Runs and model versions go to MLflow.
+
+## The API
+
+`POST /predict` scores one lap. `POST /predict/from-history` also takes the stint's earlier lap times and works out the lag features for you. `POST /predict/batch` scores many laps at once (500 by default). `GET /health`, `/ready` and `/model-info` cover status, the loaded model and its held-out metrics.
 
 ```bash
-cp .env.example .env
-# Set AIRFLOW_UID to the output of: id -u
-docker compose --profile airflow up --build -d
+curl -s localhost:8000/predict -H 'Content-Type: application/json' -d '{
+  "tyre_age": 14, "compound": "MEDIUM", "stint_number": 1, "lap_number": 18,
+  "race_progress": 0.316, "track_temperature": 38, "air_temperature": 27,
+  "humidity": 45, "wind_speed": 2.5
+}'
 ```
 
-Airflow is available at `http://localhost:8080`. The weekly DAG checks for input drift and can run ingestion, preprocessing, training, and a summary step. Set the `force_retrain` DAG parameter to skip the drift check and start retraining.
+You get back `pace_loss_s`, `pit_probability`, `pit_recommended` and a `request_id`. Inputs are validated strictly, so bad values, unknown fields and wet compounds come back as a 422 that names the field. Every prediction is appended to a log file, which the drift check reads. Settings come from environment variables such as `MODEL_DIR`, `PREDICTION_LOG` and `MAX_BATCH` (see `src/api/settings.py`).
 
-## Monitoring and CI
+## The web app
 
-The drift command compares logged API inputs with the training data:
+The app is served by the API container at `http://localhost:8000/`.
+
+- **Predict** takes a lap, and optionally the stint's earlier lap times, and shows the call with the pit probability.
+- **Stint Replay** lets you pick a race, driver and stint and compare predicted and actual pace loss lap by lap.
+- **Model & Monitoring** shows the champion's metrics and the latest drift report.
+
+The replay data is built from the held-out test races with `python -m src.replay.build_sample`. Commit `replay/sample.json.gz` and rebuild the image.
+
+It is plain HTML, CSS and JavaScript in `web/`, with no build step.
+
+## Monitoring and retraining
 
 ```bash
 python -m src.monitoring.drift
 ```
 
-Reports are written to `reports/drift/`. Fewer than 200 logged requests is treated as insufficient data. The thresholds are initial values and should be reviewed against real traffic.
+This compares the inputs the API has seen with the training data using Evidently and writes a report to `reports/drift/`. Drift is flagged when at least 20% of the columns have moved. With fewer than 200 logged requests it reports "insufficient data", which is a normal result, not an error. The thresholds are starting values chosen on synthetic data, so review them against real traffic.
 
-GitHub Actions runs linting and tests, a Docker smoke test using a temporary synthetic model, and Airflow DAG tests. The manual image-publish workflow needs a shared DVC remote and repository secrets before it can be used.
+A weekly Airflow DAG (`f1_retrain`) runs the drift check and, if it finds drift, reruns ingest, preprocess and train through the same gates as a manual run. Set the `force_retrain` parameter to skip the check. It never commits anything: a person reviews the result, then commits `dvc.lock` and `metrics/`.
 
-## Web app
+```bash
+cp .env.example .env     # set AIRFLOW_UID to the output of: id -u
+docker compose --profile airflow up --build -d
+docker compose exec airflow cat /opt/airflow/standalone_admin_password.txt
+```
 
-With the API running, open `http://localhost:8000/`. Three pages:
+Airflow is at `http://localhost:8080` with user `admin`. It is a single-container demo setup, not a production one.
 
-- **Predict**: enter a lap, optionally with the stint's earlier lap times, and get pace loss, pit probability and a box or stay out call.
-- **Stint replay**: pick a race, driver and stint from a small bundled sample and compare the model's per-lap output with what actually happened. The sample is built from the held-out test split: `python -m src.replay.build_sample`, then commit `replay/sample.json.gz` and rebuild the image. Replay calls are not written to the prediction log, so they do not affect drift checks.
-- **Model & monitoring**: the champion's version, held-out metrics and the latest drift report. The report appears after the Airflow DAG or `python -m src.monitoring.drift` has run.
+## Project layout
 
-The page is plain HTML and JavaScript in `web/`, with no build step. It is served with a strict content security policy and never inserts strings as HTML. It has no login, so keep it on a trusted network.
+```
+src/data/        ingest and preprocess
+src/features.py  one shared feature preparer for training and serving
+src/models/      estimators, evaluation, training, model export
+src/api/         FastAPI app, schemas, model service, web routes
+src/monitoring/  Evidently drift check
+src/replay/      replay sample builder
+web/             the web app
+airflow/         DAG, image and DAG tests
+tests/           tests on synthetic data
+params.yaml      every pipeline setting
+dvc.yaml         the pipeline
+```
 
-## Tests
+## Tests and CI
 
-Run `python -m pytest -q`. Tests use synthetic data and do not need network access.
+`python -m pytest -q` runs the tests on synthetic data, with no network needed. GitHub Actions runs lint and tests, a Docker build with smoke tests against a temporary synthetic model, and the Airflow DAG tests.
 
-## Important notes
-- The model is trained on dry races only. Rainfall may trigger a warning, but wet tyre compounds are rejected.
-- The pit recommendation is a heuristic, not actual team strategy.
-- The API has no authentication or rate limiting. Put it behind a gateway before exposing it outside a trusted network.
-- The configured DVC remote is a local folder (`/home/saad/Documents/dvc-storage`). Teammates need access to a shared copy or a shared remote to retrieve data and model files.
-- The CI Docker smoke test uses a temporary synthetic model. The manual image-publish workflow has not been run, and a full deployment check needs the real model from a shared DVC remote.
+## Limitations
+
+- Dry races only. Wet sessions are excluded from training and wet compounds are rejected.
+- The pit flag is a rule on recent pace loss, so precision and recall only measure agreement with that rule.
+- Pace loss R² is moderate, and predictions without earlier laps are noticeably weaker.
+- No authentication or rate limiting. Keep it on a trusted network.
+- The data and model need DVC, whose remote is a local folder, so a plain clone cannot run the app.
+- The manual image-publish workflow has never been run.
